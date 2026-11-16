@@ -34,12 +34,16 @@ from core.interview import (  # noqa: E402
     CORE_INTERVIEW_QUESTIONS,
     CORE_QUESTION_IDS,
     DIFFICULTY_IDS,
+    MAX_QUESTIONS_PER_SESSION,
+    InterviewConfigurationError,
     QUESTION_BANK,
     QUESTION_BANK_IDS,
     ROLE_GROUPS,
     build_local_feedback,
+    build_model_answer,
     build_session_summary,
     evaluate_answer,
+    generate_ai_question,
     get_question,
     select_questions,
 )
@@ -51,12 +55,14 @@ from core.interview_store import (  # noqa: E402
     SESSION_CANCELLED,
     SESSION_COMPLETED,
     SESSION_IN_PROGRESS,
+    add_custom_question,
     cancel_session,
     complete_session,
     create_session,
     delete_session,
     get_responses,
     get_session,
+    get_session_questions,
     list_sessions,
     save_response,
 )
@@ -207,6 +213,17 @@ class QuestionBankTests(unittest.TestCase):
             )
         )
 
+    def test_more_than_six_questions_can_be_selected(self) -> None:
+        self.assertGreaterEqual(MAX_QUESTIONS_PER_SESSION, len(QUESTION_BANK))
+        questions = select_questions(
+            "general",
+            "intermediate",
+            "ICT support officer",
+            MAX_QUESTIONS_PER_SESSION,
+        )
+        self.assertGreater(len(questions), 6)
+        self.assertEqual(len({question.question_id for question in questions}), len(questions))
+
     def test_invalid_configuration_is_rejected(self) -> None:
         with self.assertRaises(Exception):
             select_questions("not-a-category", "beginner", "support", 4)
@@ -296,6 +313,102 @@ class LocalFeedbackAndAiTests(unittest.TestCase):
         self.assertEqual(feedback["provider_name"], "approved-test-provider")
         self.assertIn("AI-generated", feedback["disclaimer"])
 
+    def test_ai_followup_question_is_labelled_and_uses_minimum_context(self) -> None:
+        class WorkingQuestionProvider:
+            name = "approved-question-provider"
+
+            def __init__(self) -> None:
+                self.request = None
+
+            def generate_question(self, request):
+                self.request = request
+                return {
+                    "question": "Tell me about a time you explained a technical issue to a non-technical colleague.",
+                    "assesses": "Communication and empathy.",
+                    "structure": "Use a specific example and explain the result.",
+                }
+
+        provider = WorkingQuestionProvider()
+        generated = generate_ai_question(
+            "general",
+            "ICT support officer",
+            "intermediate",
+            ["Tell me about yourself."],
+            provider,
+        )
+        self.assertEqual(generated["source"], "ai")
+        self.assertIn("non-technical colleague", generated["question"])
+        self.assertEqual(
+            provider.request.previous_questions,
+            ("Tell me about yourself.",),
+        )
+        self.assertNotIn("CV", repr(provider.request))
+        self.assertNotIn("profile", repr(provider.request))
+
+    def test_ai_followup_question_rejects_a_repeat(self) -> None:
+        class RepeatingProvider:
+            name = "repeating-provider"
+
+            def generate_question(self, request):
+                return {
+                    "question": "Tell me about yourself.",
+                    "assesses": "Opening question.",
+                    "structure": "Use a short summary.",
+                }
+
+        with self.assertRaises(InterviewConfigurationError):
+            generate_ai_question(
+                "general",
+                "ICT support officer",
+                "intermediate",
+                ["Tell me about yourself."],
+                RepeatingProvider(),
+            )
+
+    def test_ai_model_answer_is_labelled_and_uses_minimum_context(self) -> None:
+        class WorkingModelAnswerProvider:
+            name = "approved-model-answer-provider"
+
+            def __init__(self) -> None:
+                self.request = None
+
+            def generate_model_answer(self, request):
+                self.request = request
+                return {
+                    "model_answer": (
+                        "In my [project], I noticed [problem]. I took responsibility "
+                        "for [action], worked with [people], and the result was [result]."
+                    ),
+                    "why_it_works": "It uses a specific example and a clear result.",
+                    "star_breakdown": {
+                        "situation": "A real project.",
+                        "task": "Fix the issue.",
+                        "action": "Investigated and involved others.",
+                        "result": "The issue was resolved.",
+                    },
+                    "tips": ["Replace the placeholders with real details."],
+                }
+
+        question = get_question("experience_proud_project")
+        provider = WorkingModelAnswerProvider()
+        answer = build_model_answer(
+            question,
+            "ICT support officer",
+            "intermediate",
+            provider,
+        )
+        self.assertEqual(answer["source"], "ai")
+        self.assertEqual(answer["provider_name"], "approved-model-answer-provider")
+        self.assertEqual(answer["star_breakdown"]["Situation"], "A real project.")
+        self.assertIn("not a score", answer["disclaimer"])
+        self.assertEqual(provider.request.question, question.question)
+        self.assertNotIn("answer", provider.request.__dict__)
+
+    def test_ai_model_answer_requires_a_configured_provider(self) -> None:
+        question = get_question("opening_tell_me_about_yourself")
+        with self.assertRaises(InterviewConfigurationError):
+            build_model_answer(question, "ICT support officer", "beginner", None)
+
     def test_session_summary_is_non_scoring(self) -> None:
         response = {
             "feedback": {
@@ -337,6 +450,7 @@ class InterviewStoreTests(InterviewTestBase):
             connection.close()
         self.assertIn("interview_sessions", tables)
         self.assertIn("interview_responses", tables)
+        self.assertIn("interview_custom_questions", tables)
 
     def test_session_creation_and_retrieval(self) -> None:
         session = self.create_test_session(3)
@@ -351,6 +465,86 @@ class InterviewStoreTests(InterviewTestBase):
 
         sessions = list_sessions(self.profile["profile_id"], db_path=self.db_path)
         self.assertEqual([item["id"] for item in sessions], [session["id"]])
+
+    def test_more_than_six_questions_can_be_created(self) -> None:
+        session = self.create_test_session(10)
+        self.assertEqual(len(session["question_ids"]), 10)
+        self.assertEqual(
+            len(
+                get_session_questions(
+                    session["id"],
+                    self.profile["profile_id"],
+                    db_path=self.db_path,
+                )
+            ),
+            10,
+        )
+
+    def test_ai_followup_question_can_be_added_and_answered(self) -> None:
+        session = self.create_test_session(1)
+        custom = add_custom_question(
+            session["id"],
+            self.profile["profile_id"],
+            "How would you explain a password reset to a frustrated user?",
+            "general",
+            "intermediate",
+            assesses="Customer care and communication.",
+            structure="Use a calm, step-by-step example.",
+            db_path=self.db_path,
+        )
+        self.assertEqual(custom["source"], "ai")
+        self.assertTrue(str(custom["question_id"]).startswith("ai_"))
+
+        questions = get_session_questions(
+            session["id"],
+            self.profile["profile_id"],
+            db_path=self.db_path,
+        )
+        self.assertEqual(len(questions), 2)
+        self.assertEqual(questions[-1]["question"], custom["question"])
+        self.assertEqual(questions[-1]["source"], "ai")
+
+        answer = (
+            "I would stay calm, confirm the user's details, explain each step, and "
+            "check that they can sign in before ending the call."
+        )
+        feedback = evaluate_answer(
+            questions[-1],
+            answer,
+            self.profile["career_interest"],
+            "intermediate",
+        )
+        saved = save_response(
+            session["id"],
+            self.profile["profile_id"],
+            custom["question_id"],
+            answer,
+            feedback,
+            db_path=self.db_path,
+        )
+        self.assertEqual(saved["question_text"], custom["question"])
+        self.assertEqual(saved["feedback"]["source"], "local_guidance")
+
+    def test_duplicate_ai_followup_question_is_rejected(self) -> None:
+        session = self.create_test_session(1)
+        text = "How would you handle a difficult customer?"
+        add_custom_question(
+            session["id"],
+            self.profile["profile_id"],
+            text,
+            "general",
+            "intermediate",
+            db_path=self.db_path,
+        )
+        with self.assertRaises(InterviewValidationError):
+            add_custom_question(
+                session["id"],
+                self.profile["profile_id"],
+                text,
+                "general",
+                "intermediate",
+                db_path=self.db_path,
+            )
 
     def test_response_saving_and_retrieval(self) -> None:
         session = self.create_test_session(2)
@@ -564,6 +758,59 @@ class InterviewStoreTests(InterviewTestBase):
         self.assertIsNone(
             get_session(session["id"], self.profile["profile_id"], db_path=self.db_path)
         )
+
+    def test_deleting_session_removes_ai_followup_questions(self) -> None:
+        session = self.create_test_session(1)
+        add_custom_question(
+            session["id"],
+            self.profile["profile_id"],
+            "What would you do if a user could not explain the problem clearly?",
+            "general",
+            "intermediate",
+            db_path=self.db_path,
+        )
+        self.assertTrue(
+            delete_session(
+                session["id"],
+                self.profile["profile_id"],
+                db_path=self.db_path,
+            )
+        )
+        connection = sqlite3.connect(self.db_path)
+        try:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM interview_custom_questions WHERE session_id = ?",
+                (session["id"],),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(count, 0)
+
+    def test_deleting_profile_cascades_ai_followup_questions(self) -> None:
+        session = self.create_test_session(1)
+        add_custom_question(
+            session["id"],
+            self.profile["profile_id"],
+            "How would you prioritise two urgent support requests?",
+            "general",
+            "intermediate",
+            db_path=self.db_path,
+        )
+        self.assertTrue(
+            delete_profile_record(
+                self.profile["profile_id"],
+                db_path=self.db_path,
+            )
+        )
+        connection = sqlite3.connect(self.db_path)
+        try:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM interview_custom_questions WHERE session_id = ?",
+                (session["id"],),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(count, 0)
 
     def test_deleting_profile_cascades_interview_data(self) -> None:
         session = self.create_test_session(1)

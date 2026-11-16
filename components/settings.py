@@ -89,8 +89,9 @@ def render_settings_page(profiles: list[dict]) -> None:
                 <span class="km-status-dot"></span>
                 <div><strong>Profiles and CVs stay on this computer.</strong>
                 <p>Profiles and CVs are written to local files. If AI practice
-                feedback is enabled, only the target role, category, difficulty,
-                question, and answer are sent to the configured provider.</p></div>
+                features are enabled, only the interview practice details needed for
+                that action are sent to the configured provider. Profile and CV data
+                are not sent.</p></div>
               </div>
               <div class="km-privacy-row">
                 <span class="km-status-dot"></span>

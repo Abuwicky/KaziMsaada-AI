@@ -1,8 +1,9 @@
-"""Interview question bank, configuration, and local feedback guidance.
+"""Interview question bank, configuration, local guidance, and AI normalisation.
 
 This module is deliberately provider-neutral. It can produce useful local
-practice guidance without any network access. An approved AI adapter can be
-supplied later through ``core.ai_client`` without changing the UI or storage.
+practice guidance without any network access, and it normalises optional output
+from an approved adapter supplied through ``core.ai_client``. The UI and storage
+never depend on a specific provider.
 """
 
 from __future__ import annotations
@@ -11,14 +12,21 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .ai_client import AIProvider, FeedbackRequest
+from .ai_client import (
+    AIModelAnswerProvider,
+    AIProvider,
+    AIQuestionProvider,
+    FeedbackRequest,
+    ModelAnswerRequest,
+    QuestionRequest,
+)
 
 MIN_QUESTIONS_PER_SESSION = 3
 DEFAULT_QUESTIONS_PER_SESSION = 4
-MAX_QUESTIONS_PER_SESSION = 6
 MAX_ANSWER_CHARS = 5000
 MAX_TARGET_ROLE_CHARS = 160
 MAX_FEEDBACK_CHARS = 4000
+MAX_GENERATED_QUESTION_CHARS = 500
 
 
 @dataclass(frozen=True)
@@ -535,6 +543,13 @@ CORE_QUESTION_LOOKUP = {
     question.question_id: question for question in CORE_INTERVIEW_QUESTIONS
 }
 
+# A session starts with a curated set, then can continue with AI-generated
+# follow-up questions. There is no artificial five- or six-question ceiling.
+MAX_QUESTIONS_PER_SESSION = len(QUESTION_BANK)
+# A high safety ceiling prevents runaway sessions while keeping practice open.
+# Users can complete a session and start another one at any time.
+MAX_SESSION_QUESTION_LIMIT = MAX_QUESTIONS_PER_SESSION + 1000
+
 
 class InterviewConfigurationError(ValueError):
     """Raised when interview settings or question filters are invalid."""
@@ -830,8 +845,193 @@ def _normalise_ai_feedback(payload: Mapping[str, Any]) -> dict[str, Any]:
     return feedback
 
 
+def _question_context(
+    question: InterviewQuestion | Mapping[str, Any],
+) -> tuple[str, str]:
+    """Return a readable category and question text from either supported shape."""
+
+    if isinstance(question, Mapping):
+        category = str(question.get("category", "") or "").strip()
+        question_text = str(question.get("question", "") or "").strip()
+    else:
+        category = str(question.category or "").strip()
+        question_text = str(question.question or "").strip()
+
+    category = CATEGORY_LABELS.get(category, category)
+    return category, question_text
+
+
+def _normalise_ai_question(
+    payload: Mapping[str, Any],
+    category_id: str,
+    difficulty: str,
+) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise ValueError("The AI provider did not return a question object.")
+
+    question = _truncate(payload.get("question"), MAX_GENERATED_QUESTION_CHARS)
+    if not question:
+        raise ValueError("The AI provider returned an empty question.")
+
+    assesses = _truncate(payload.get("assesses"), 1200)
+    structure = _truncate(payload.get("structure"), 1500)
+
+    return {
+        "question": question,
+        "assesses": assesses
+        or "The interviewer is assessing how you answer this question with a relevant example.",
+        "structure": structure
+        or "Use Situation, Task, Action and Result, and connect the example back to the target role.",
+        "category": category_id,
+        "difficulty": difficulty,
+        "source": "ai",
+    }
+
+
+def generate_ai_question(
+    category_id: str,
+    target_role: str,
+    difficulty: str,
+    previous_questions: list[str] | tuple[str, ...],
+    provider: AIQuestionProvider | None = None,
+) -> dict[str, Any]:
+    """Generate one new practice question for an open-ended session.
+
+    Previous answers are never sent. Only the question texts already used in the
+    session are included so the provider can avoid repetition.
+    """
+
+    if category_id not in CATEGORY_LOOKUP:
+        raise InterviewConfigurationError("Choose a valid interview category.")
+    if difficulty not in DIFFICULTY_IDS:
+        raise InterviewConfigurationError("Choose a valid difficulty level.")
+    if provider is None:
+        raise InterviewConfigurationError(
+            "AI follow-up questions are not configured for this workspace."
+        )
+    if not callable(getattr(provider, "generate_question", None)):
+        raise InterviewConfigurationError(
+            "The configured AI provider does not support follow-up questions."
+        )
+
+    prior = tuple(
+        str(item).strip()
+        for item in previous_questions
+        if str(item).strip()
+    )
+    request = QuestionRequest(
+        target_role=str(target_role or "").strip()[:MAX_TARGET_ROLE_CHARS],
+        category=category_label(category_id),
+        difficulty=difficulty_label(difficulty),
+        previous_questions=prior[-20:],
+    )
+
+    generated = _normalise_ai_question(
+        provider.generate_question(request),
+        category_id,
+        difficulty,
+    )
+    if generated["question"].casefold() in {item.casefold() for item in prior}:
+        raise InterviewConfigurationError(
+            "The AI returned a question that was already used in this session. "
+            "Please try again."
+        )
+    return generated
+
+
+def _normalise_model_answer(
+    payload: Mapping[str, Any],
+    provider: AIModelAnswerProvider,
+) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise ValueError("The AI provider did not return a model answer object.")
+
+    model_answer = _truncate(payload.get("model_answer"), 6000)
+    if not model_answer:
+        raise ValueError("The AI provider returned an empty model answer.")
+
+    why_it_works = _truncate(payload.get("why_it_works"), 2000)
+    star_payload = payload.get("star_breakdown")
+    star_breakdown: dict[str, str] = {}
+    if isinstance(star_payload, Mapping):
+        for field, label in (
+            ("situation", "Situation"),
+            ("task", "Task"),
+            ("action", "Action"),
+            ("result", "Result"),
+        ):
+            value = _truncate(star_payload.get(field), 800)
+            if value:
+                star_breakdown[label] = value
+
+    tips = payload.get("tips", [])
+    if isinstance(tips, str):
+        tips = [tips]
+    if not isinstance(tips, (list, tuple)):
+        tips = []
+    clean_tips = [
+        _truncate(tip, 500)
+        for tip in tips
+        if str(tip).strip()
+    ][:4]
+    if not clean_tips:
+        clean_tips = [
+            "Replace every placeholder with a real example from your own experience.",
+            "Practise saying the answer aloud in about one to two minutes.",
+        ]
+
+    return {
+        "feedback_kind": "ai_model_answer",
+        "source": "ai",
+        "model_answer": model_answer,
+        "why_it_works": why_it_works
+        or "This answer uses a clear example and connects it back to the target role.",
+        "star_breakdown": star_breakdown,
+        "tips": clean_tips,
+        "provider_name": str(getattr(provider, "name", "AI provider")),
+        "disclaimer": (
+            "AI-generated practice example. There is no single correct interview "
+            "answer; replace placeholders with your own real experience. This is "
+            "not a score, a prediction, or a guarantee of interview success."
+        ),
+    }
+
+
+def build_model_answer(
+    question: InterviewQuestion | Mapping[str, Any],
+    target_role: str,
+    difficulty: str,
+    provider: AIModelAnswerProvider | None = None,
+) -> dict[str, Any]:
+    """Draft one clearly labelled AI model answer for STAR practice."""
+
+    if provider is None:
+        raise InterviewConfigurationError(
+            "AI model answers are not configured for this workspace."
+        )
+    if not callable(getattr(provider, "generate_model_answer", None)):
+        raise InterviewConfigurationError(
+            "The configured AI provider does not support model answers."
+        )
+
+    category, question_text = _question_context(question)
+    if not question_text:
+        raise InterviewConfigurationError("Choose a valid practice question.")
+
+    request = ModelAnswerRequest(
+        target_role=str(target_role or "").strip()[:MAX_TARGET_ROLE_CHARS],
+        category=category,
+        difficulty=difficulty_label(difficulty),
+        question=question_text,
+    )
+    return _normalise_model_answer(
+        provider.generate_model_answer(request),
+        provider,
+    )
+
+
 def evaluate_answer(
-    question: InterviewQuestion,
+    question: InterviewQuestion | Mapping[str, Any],
     answer: str,
     target_role: str,
     difficulty: str,
@@ -847,11 +1047,12 @@ def evaluate_answer(
     if provider is None:
         return local
 
+    category, question_text = _question_context(question)
     request = FeedbackRequest(
         target_role=str(target_role or "").strip(),
-        category=question.category,
+        category=category,
         difficulty=difficulty,
-        question=question.question,
+        question=question_text,
         answer=str(answer or "").strip()[:MAX_ANSWER_CHARS],
     )
 

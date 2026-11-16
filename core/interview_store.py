@@ -15,10 +15,13 @@ from uuid import uuid4
 
 from .database import get_database_connection
 from .interview import (
+    CATEGORY_LABELS,
     CATEGORY_LOOKUP,
     DIFFICULTY_IDS,
     MAX_ANSWER_CHARS,
+    MAX_GENERATED_QUESTION_CHARS,
     MAX_QUESTIONS_PER_SESSION,
+    MAX_SESSION_QUESTION_LIMIT,
     MAX_TARGET_ROLE_CHARS,
     get_question,
 )
@@ -86,6 +89,38 @@ def _response_from_row(row: sqlite3.Row) -> dict[str, Any]:
     response["feedback"] = _json_load(response.get("feedback"), {})
     response["assessment_data"] = _json_load(response.get("assessment_data"), {})
     return response
+
+
+def _custom_question_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    question = dict(row)
+    category = str(question.get("category", "") or "").strip()
+    question["category"] = CATEGORY_LABELS.get(category, category)
+    question["question_id"] = question.get("id")
+    question["question"] = question.get("question_text")
+    question["source"] = str(question.get("source", "ai") or "ai")
+    return question
+
+
+def _question_descriptor(
+    question_id: str,
+    custom_questions: dict[str, sqlite3.Row],
+) -> dict[str, Any] | None:
+    bank_question = get_question(question_id)
+    if bank_question is not None:
+        return {
+            "question_id": bank_question.question_id,
+            "question": bank_question.question,
+            "category": bank_question.category,
+            "difficulty": bank_question.difficulty,
+            "assesses": bank_question.assesses,
+            "structure": bank_question.structure,
+            "source": "curated",
+        }
+
+    custom_row = custom_questions.get(question_id)
+    if custom_row is None:
+        return None
+    return _custom_question_from_row(custom_row)
 
 
 def _clean_text(value: Any, field_name: str, maximum: int) -> str:
@@ -272,6 +307,142 @@ def list_sessions(
     return [_session_from_row(row) for row in rows]
 
 
+def get_session_questions(
+    session_id: str,
+    profile_id: str,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return curated and AI-generated questions in session order."""
+
+    with get_database_connection(db_path) as connection:
+        session_row = _get_owned_session_row(connection, session_id, profile_id)
+        question_ids = _json_load(session_row["question_ids"], [])
+        if not isinstance(question_ids, list):
+            question_ids = []
+        custom_rows = connection.execute(
+            """
+            SELECT *
+            FROM interview_custom_questions
+            WHERE session_id = ?
+            ORDER BY created_at
+            """,
+            (session_id,),
+        ).fetchall()
+
+    custom_lookup = {str(row["id"]): row for row in custom_rows}
+    questions: list[dict[str, Any]] = []
+    for question_id in question_ids:
+        descriptor = _question_descriptor(str(question_id), custom_lookup)
+        if descriptor is not None:
+            questions.append(descriptor)
+    return questions
+
+
+def add_custom_question(
+    session_id: str,
+    profile_id: str,
+    question_text: str,
+    category: str,
+    difficulty: str,
+    assesses: str = "",
+    structure: str = "",
+    source: str = "ai",
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Append an AI-generated question to an in-progress session."""
+
+    question_text = _clean_text(
+        question_text,
+        "Question",
+        MAX_GENERATED_QUESTION_CHARS,
+    )
+    category = _clean_text(category, "Interview category", 80)
+    difficulty = _clean_text(difficulty, "Difficulty", 40)
+    if category not in CATEGORY_LOOKUP:
+        raise InterviewValidationError("Choose a valid interview category.")
+    if difficulty not in DIFFICULTY_IDS:
+        raise InterviewValidationError("Choose a valid difficulty level.")
+
+    question_id = f"ai_{uuid4().hex}"
+    now = _now()
+
+    with get_database_connection(db_path) as connection:
+        session_row = _get_owned_session_row(connection, session_id, profile_id)
+        if session_row["status"] != SESSION_IN_PROGRESS:
+            raise InterviewSessionClosed(
+                "This practice session is no longer accepting questions."
+            )
+
+        question_ids = _json_load(session_row["question_ids"], [])
+        if not isinstance(question_ids, list):
+            question_ids = []
+        if len(question_ids) >= MAX_SESSION_QUESTION_LIMIT:
+            raise InterviewValidationError(
+                "This session has reached its safe question limit. "
+                "Complete it and start another session."
+            )
+
+        duplicate = connection.execute(
+            """
+            SELECT 1
+            FROM interview_custom_questions
+            WHERE session_id = ? AND lower(question_text) = lower(?)
+            """,
+            (session_id, question_text),
+        ).fetchone()
+        if duplicate:
+            raise InterviewValidationError(
+                "That follow-up question is already part of this session."
+            )
+
+        connection.execute(
+            """
+            INSERT INTO interview_custom_questions (
+                id,
+                session_id,
+                question_text,
+                category,
+                difficulty,
+                assesses,
+                structure,
+                source,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                question_id,
+                session_id,
+                question_text,
+                category,
+                difficulty,
+                str(assesses or "").strip()[:1200],
+                str(structure or "").strip()[:1500],
+                str(source or "ai").strip()[:40] or "ai",
+                now,
+            ),
+        )
+        question_ids.append(question_id)
+        connection.execute(
+            """
+            UPDATE interview_sessions
+            SET question_ids = ?, updated_at = ?
+            WHERE id = ? AND profile_id = ?
+            """,
+            (_json_dump(question_ids), now, session_id, profile_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM interview_custom_questions WHERE id = ?",
+            (question_id,),
+        ).fetchone()
+
+    if row is None:
+        raise InterviewStoreError(
+            "The follow-up question could not be loaded after saving."
+        )
+    return _custom_question_from_row(row)
+
+
 def _response_count(
     connection: sqlite3.Connection,
     session_id: str,
@@ -302,9 +473,6 @@ def save_response(
     if not isinstance(feedback, Mapping):
         raise InterviewValidationError("Feedback data is required.")
 
-    question = get_question(question_id)
-    if question is None:
-        raise InterviewValidationError("An unknown interview question was submitted.")
     if assessment_data is not None and not isinstance(assessment_data, Mapping):
         raise InterviewValidationError("Assessment data must be an object.")
 
@@ -324,6 +492,24 @@ def save_response(
                 raise InterviewValidationError(
                     "That question is not part of this practice session."
                 )
+
+            bank_question = get_question(question_id)
+            if bank_question is not None:
+                question_text = bank_question.question
+            else:
+                custom_row = connection.execute(
+                    """
+                    SELECT question_text
+                    FROM interview_custom_questions
+                    WHERE session_id = ? AND id = ?
+                    """,
+                    (session_id, question_id),
+                ).fetchone()
+                if custom_row is None:
+                    raise InterviewValidationError(
+                        "An unknown interview question was submitted."
+                    )
+                question_text = str(custom_row["question_text"])
 
             duplicate = connection.execute(
                 """
@@ -358,7 +544,7 @@ def save_response(
                     response_id,
                     session_id,
                     question_id,
-                    question.question,
+                    question_text,
                     question_order,
                     answer_text,
                     _json_dump(dict(feedback)),

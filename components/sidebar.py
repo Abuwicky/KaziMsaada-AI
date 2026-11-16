@@ -135,9 +135,10 @@ def render_sidebar(profiles: list[dict]) -> str:
             st.caption("Database")
             st.code(str(DATABASE_FILE), language=None)
             st.caption(
-                "Profiles and CVs are stored locally. When AI practice feedback is "
-                "enabled, only the target role, category, difficulty, question, and "
-                "answer are sent to the configured provider."
+                "Profiles and CVs are stored locally. When AI practice features are "
+                "enabled, only the interview practice details needed for that action "
+                "are sent to the configured provider. Profile and CV data are not "
+                "sent."
             )
 
     return st.session_state["page"]

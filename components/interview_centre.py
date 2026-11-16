@@ -23,7 +23,7 @@ from core.interview import (
     category_label,
     difficulty_label,
     evaluate_answer,
-    get_question,
+    generate_ai_question,
     select_questions,
 )
 from core.interview_store import (
@@ -35,12 +35,14 @@ from core.interview_store import (
     SESSION_CANCELLED,
     SESSION_COMPLETED,
     SESSION_IN_PROGRESS,
+    add_custom_question,
     cancel_session,
     complete_session,
     create_session,
     delete_session,
     get_responses,
     get_session,
+    get_session_questions,
     list_sessions,
     save_response,
 )
@@ -166,9 +168,9 @@ def _render_landing_intro(profile: dict) -> None:
             <strong>Mock Interview Centre for {name}</strong>
             <span>
               Practise one question at a time, receive supportive feedback, and
-              build confidence before the real conversation. Target area: {interest}.
-              This release is text-based practice; human coach booking is planned
-              for a later phase.
+              continue with AI follow-up questions when you want more practice.
+              Target area: {interest}. This release is text-based practice; human
+              coach booking is planned for a later phase.
             </span>
           </div>
         </div>
@@ -189,7 +191,11 @@ def _render_landing_intro(profile: dict) -> None:
 def _render_ai_status() -> None:
     availability = ai_status()
     if availability.available:
-        st.caption("AI-assisted feedback is configured for this workspace.")
+        st.caption(
+            "AI-assisted interview practice is configured for this workspace. "
+            "Follow-up questions and STAR model answers are offered when the "
+            "configured provider supports them."
+        )
     elif availability.configured:
         st.warning(availability.message)
     else:
@@ -243,15 +249,29 @@ def _render_start_form(
             help="The session keeps its difficulty label and preferences in feedback.",
         )
         question_count = st.slider(
-            "Number of questions",
+            "Starting number of curated questions",
             min_value=MIN_QUESTIONS_PER_SESSION,
             max_value=MAX_QUESTIONS_PER_SESSION,
             value=DEFAULT_QUESTIONS_PER_SESSION,
             step=1,
             key=count_key,
-            help="A shorter session is easier to complete in one sitting.",
+            help=(
+                "Pick a starting set. After you answer it, you can keep practising "
+                "with AI follow-up questions without a fixed session limit."
+            ),
+        )
+        st.caption(
+            f"The curated bank has {MAX_QUESTIONS_PER_SESSION} questions across the "
+            "categories. If fewer match your role, the session uses all available. "
+            "AI follow-ups let you continue beyond the starting set."
         )
         started = st.form_submit_button("Start mock interview", type="primary")
+
+    st.caption(
+        "AI feedback sends only the target role, category, difficulty, question and "
+        "your answer. AI follow-up questions send only the target role, category, "
+        "difficulty and previous question texts. Your profile and CV are not sent."
+    )
 
     if not started:
         return
@@ -313,24 +333,30 @@ def _render_active_session(
 
     try:
         responses = get_responses(session_id, profile_id)
-    except (InterviewSessionNotFound, sqlite3.Error) as error:
-        st.error(f"Saved answers could not be loaded. {error}")
+        session_questions = get_session_questions(session_id, profile_id)
+    except (InterviewSessionNotFound, InterviewStoreError, sqlite3.Error) as error:
+        st.error(f"Saved practice data could not be loaded. {error}")
         return
 
-    question_ids = [str(item) for item in session.get("question_ids", [])]
-    total = len(question_ids)
+    total = len(session_questions)
     if total == 0:
         st.error("This practice session has no questions. End it and start again.")
         _render_cancel_control(profile_scope, session, active_key, notice_key)
         return
 
     answered_ids = {str(response["question_id"]) for response in responses}
-    unanswered = [question_id for question_id in question_ids if question_id not in answered_ids]
+    unanswered = [
+        question
+        for question in session_questions
+        if str(question["question_id"]) not in answered_ids
+    ]
 
     if not unanswered:
-        _complete_and_review(
-            profile_id,
+        _render_all_answered_controls(
+            profile,
+            profile_scope,
             session,
+            session_questions,
             responses,
             active_key,
             review_key,
@@ -338,24 +364,22 @@ def _render_active_session(
         )
         return
 
-    current_id = unanswered[0]
-    question = get_question(current_id)
-    if question is None:
-        st.error("This session contains a question that is no longer available.")
-        _render_cancel_control(profile_scope, session, active_key, notice_key)
-        return
-
-    question_number = question_ids.index(current_id) + 1
+    question = unanswered[0]
+    current_id = str(question["question_id"])
+    question_number = next(
+        (
+            index
+            for index, item in enumerate(session_questions, start=1)
+            if str(item["question_id"]) == current_id
+        ),
+        1,
+    )
     category = category_label(str(session.get("category", "")))
     target_role = str(session.get("target_role", ""))
     difficulty = difficulty_label(str(session.get("difficulty", "")))
 
-    st.markdown(
-        f"### {category} · Question {question_number} of {total}"
-    )
-    st.caption(
-        f"Target position: {target_role} · Difficulty: {difficulty}"
-    )
+    st.markdown(f"### {category} · Question {question_number} of {total}")
+    st.caption(f"Target position: {target_role} · Difficulty: {difficulty}")
     st.progress(min(1.0, len(responses) / total))
     st.caption(f"{len(responses)} of {total} questions answered")
 
@@ -363,10 +387,17 @@ def _render_active_session(
         with st.expander("Feedback on your last answer", expanded=False):
             _render_feedback(responses[-1].get("feedback", {}))
 
-    st.markdown(f"#### {question.question}")
+    if question.get("source") == "ai":
+        st.caption(
+            "AI-generated follow-up question. It is extra practice, not a curated "
+            "question-bank item."
+        )
+    st.markdown(f"#### {question.get('question', '')}")
     with st.expander("What the interviewer is assessing", expanded=False):
-        st.write(question.assesses)
-        st.markdown(f"**How to structure a good answer:** {question.structure}")
+        st.write(question.get("assesses", ""))
+        st.markdown(
+            f"**How to structure a good answer:** {question.get('structure', '')}"
+        )
 
     draft_widget = _draft_widget_key(profile_scope, session_id, current_id)
     draft_store = _draft_store_key(profile_scope, session_id, current_id)
@@ -402,10 +433,9 @@ def _render_active_session(
             profile,
             profile_scope,
             session,
-            current_id,
+            question,
             answer,
             active_key,
-            review_key,
             notice_key,
             draft_store,
         )
@@ -414,24 +444,130 @@ def _render_active_session(
         "Feedback is supportive practice guidance. It is not a score, a measurement "
         "of employability, or a guarantee of interview success."
     )
+
+    if question.get("source") == "ai":
+        st.caption(
+            "Generating AI follow-up questions sends only the target role, category, "
+            "difficulty and previous question texts. Your answers, profile and CV are "
+            "not sent."
+        )
     _render_cancel_control(profile_scope, session, active_key, notice_key)
+
+
+def _render_all_answered_controls(
+    profile: dict,
+    profile_scope: str,
+    session: dict[str, Any],
+    session_questions: list[dict[str, Any]],
+    responses: list[dict[str, Any]],
+    active_key: str,
+    review_key: str,
+    notice_key: str,
+) -> None:
+    """Offer unlimited AI follow-ups or a clean finish after the current set."""
+
+    session_id = str(session["id"])
+    total = len(session_questions)
+
+    st.success(f"You have answered all {total} questions in the current set.")
+    st.caption(
+        "You can generate an AI follow-up question and keep practising, or complete "
+        "the session and review your feedback. AI follow-ups let you continue beyond "
+        "the starting set."
+    )
+
+    provider, _ = _resolve_provider()
+    supports_followups = provider is not None and callable(
+        getattr(provider, "generate_question", None)
+    )
+
+    generate_col, complete_col = st.columns(2)
+    with generate_col:
+        if not supports_followups:
+            st.caption(
+                "AI follow-up questions are unavailable in this workspace right now. "
+                "You can complete this session or start another curated set later."
+            )
+        else:
+            generate_key = interview_centre_state_key(
+                profile_scope, f"generate_followup::{session_id}::{total}"
+            )
+            if st.button(
+                "Generate AI follow-up question",
+                key=generate_key,
+                type="primary",
+            ):
+                with st.spinner("Generating a follow-up question..."):
+                    try:
+                        generated = generate_ai_question(
+                            str(session.get("category", "")),
+                            str(session.get("target_role", "")),
+                            str(session.get("difficulty", "")),
+                            [
+                                str(item.get("question", ""))
+                                for item in session_questions
+                            ],
+                            provider,
+                        )
+                        add_custom_question(
+                            session_id,
+                            str(profile.get("profile_id")),
+                            str(generated.get("question", "")),
+                            str(session.get("category", "")),
+                            str(session.get("difficulty", "")),
+                            str(generated.get("assesses", "")),
+                            str(generated.get("structure", "")),
+                            source=str(generated.get("source", "ai")),
+                        )
+                    except Exception:
+                        st.warning(
+                            "An AI follow-up question could not be generated. Your "
+                            "answers are safe. Try again or complete the session."
+                        )
+                    else:
+                        st.session_state[notice_key] = (
+                            "AI follow-up question added. Answer it below."
+                        )
+                        st.rerun()
+
+    with complete_col:
+        complete_key = interview_centre_state_key(
+            profile_scope, f"complete_session::{session_id}::{total}"
+        )
+        if st.button("Complete session and review", key=complete_key):
+            _complete_and_review(
+                str(profile.get("profile_id")),
+                session,
+                responses,
+                active_key,
+                review_key,
+                notice_key,
+            )
+
+    st.caption(
+        "AI-generated questions are extra practice and may vary in quality. The "
+        "curated question bank remains available in the Question bank tab."
+    )
 
 
 def _submit_answer(
     profile: dict,
     profile_scope: str,
     session: dict[str, Any],
-    question_id: str,
+    question: Mapping[str, Any],
     answer: str,
     active_key: str,
-    review_key: str,
     notice_key: str,
     draft_store: str,
 ) -> None:
     profile_id = str(profile.get("profile_id"))
     session_id = str(session["id"])
+    question_id = str(question.get("question_id", ""))
     answer = str(answer or "").strip()
 
+    if not question_id:
+        st.error("That question could not be identified. Please refresh and try again.")
+        return
     if not answer:
         st.error("Write an answer before submitting.")
         return
@@ -448,11 +584,6 @@ def _submit_answer(
     if question_id in {str(response["question_id"]) for response in existing}:
         st.info("That answer has already been saved. Moving to the next question.")
         st.rerun()
-
-    question = get_question(question_id)
-    if question is None:
-        st.error("That question is no longer available.")
-        return
 
     provider, provider_notice = _resolve_provider()
     feedback = evaluate_answer(
@@ -492,25 +623,10 @@ def _submit_answer(
     # The draft is complete. Clearing the non-widget store avoids restoring it if
     # the same question is ever rendered again.
     st.session_state.pop(draft_store, None)
-
-    try:
-        responses = get_responses(session_id, profile_id)
-    except (InterviewSessionNotFound, sqlite3.Error):
-        responses = []
-
-    total = len(session.get("question_ids", []))
-    if len(responses) >= total:
-        _complete_and_review(
-            profile_id,
-            session,
-            responses,
-            active_key,
-            review_key,
-            notice_key,
-        )
-        return
-
-    st.session_state[notice_key] = "Answer saved. Continue with the next question."
+    st.session_state[notice_key] = (
+        "Answer saved. Review the feedback, continue with the next question, or "
+        "generate an AI follow-up when the current set is finished."
+    )
     st.rerun()
 
 

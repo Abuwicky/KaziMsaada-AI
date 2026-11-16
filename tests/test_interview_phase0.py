@@ -25,6 +25,8 @@ from components.career_pages import (  # noqa: E402
     interview_answer_store_key,
     interview_answer_widget_key,
     interview_checklist_key,
+    interview_model_answer_button_key,
+    interview_model_answer_key,
     interview_profile_scope,
     interview_star_store_key,
     interview_star_widget_key,
@@ -146,6 +148,16 @@ class InterviewKeyTests(unittest.TestCase):
             interview_answer_store_key("profile-a", "question-two"),
         }
         self.assertEqual(len(keys), 3)
+
+    def test_model_answer_keys_separate_profiles_and_questions(self) -> None:
+        keys = {
+            interview_model_answer_key("profile-a", "question-one"),
+            interview_model_answer_key("profile-b", "question-one"),
+            interview_model_answer_key("profile-a", "question-two"),
+            interview_model_answer_button_key("profile-a", "question-one"),
+            interview_model_answer_button_key("profile-b", "question-one"),
+        }
+        self.assertEqual(len(keys), 5)
 
     def test_switching_question_keeps_answer_mapping_stable(self) -> None:
         profile_scope = "profile-a"

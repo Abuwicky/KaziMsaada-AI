@@ -117,6 +117,24 @@ def initialize_database(db_path: str | Path | None = None) -> None:
         )
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS interview_custom_questions (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                question_text TEXT NOT NULL,
+                category TEXT NOT NULL,
+                difficulty TEXT NOT NULL,
+                assesses TEXT NOT NULL DEFAULT '',
+                structure TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'ai',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id)
+                    REFERENCES interview_sessions(id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_interview_sessions_profile_started
             ON interview_sessions(profile_id, started_at DESC)
             """
@@ -131,6 +149,95 @@ def initialize_database(db_path: str | Path | None = None) -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_interview_responses_session_order
             ON interview_responses(session_id, question_order)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_interview_custom_questions_session
+            ON interview_custom_questions(session_id, created_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS skill_assessments (
+                assessment_id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                assessment_name TEXT NOT NULL,
+                assessment_type TEXT NOT NULL
+                    CHECK (assessment_type IN ('knowledge', 'practical', 'combined')),
+                assessment_key TEXT NOT NULL,
+                target_type TEXT NOT NULL
+                    CHECK (target_type IN ('career_area', 'skill')),
+                target_id TEXT NOT NULL,
+                skill_category TEXT NOT NULL,
+                content_version TEXT NOT NULL,
+                question_ids TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'in_progress'
+                    CHECK (status IN ('in_progress', 'completed')),
+                score REAL
+                    CHECK (score IS NULL OR (score >= 0 AND score <= 100)),
+                proficiency_level TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (profile_id)
+                    REFERENCES job_seekers(profile_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS skill_assessment_responses (
+                response_id TEXT PRIMARY KEY,
+                assessment_id TEXT NOT NULL,
+                question_id TEXT NOT NULL,
+                question_text TEXT NOT NULL,
+                question_type TEXT NOT NULL
+                    CHECK (question_type IN ('knowledge', 'practical')),
+                question_order INTEGER NOT NULL DEFAULT 0,
+                response_text TEXT NOT NULL DEFAULT '',
+                selected_answer TEXT,
+                is_correct INTEGER
+                    CHECK (is_correct IS NULL OR is_correct IN (0, 1)),
+                score_awarded REAL,
+                feedback TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (assessment_id)
+                    REFERENCES skill_assessments(assessment_id)
+                    ON DELETE CASCADE,
+                UNIQUE (assessment_id, question_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_skill_assessments_profile_started
+            ON skill_assessments(profile_id, started_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_skill_assessments_profile_status
+            ON skill_assessments(profile_id, status)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_skill_assessments_target
+            ON skill_assessments(
+                profile_id,
+                assessment_key,
+                assessment_type,
+                content_version
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_skill_assessment_responses_order
+            ON skill_assessment_responses(assessment_id, question_order)
             """
         )
 

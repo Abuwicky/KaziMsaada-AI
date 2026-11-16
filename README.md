@@ -7,7 +7,7 @@ KaziMsaada AI now has two interfaces that share the same data and business logic
 - **Streamlit web application** — dashboard, profile management, CV builder with live preview, Mock Interview Centre, skills self-assessment, career pathways, and job-search support.
 - **Original command-line application** — preserved and still runnable through `main.py`.
 
-Profiles and CVs are stored locally. Optional AI practice feedback uses the provider configured in `.streamlit/secrets.toml`; when enabled, only the target role, interview category, difficulty, question, and submitted answer are sent to that provider. Your full profile and CV documents are not sent.
+Profiles and CVs are stored locally. Optional AI practice features use the provider configured in `.streamlit/secrets.toml`; when enabled, only the interview practice details needed for the selected action are sent to that provider. Your full profile and CV documents are not sent.
 
 ---
 
@@ -68,14 +68,15 @@ If PowerShell blocks activation, run the command directly:
 - Unsaved drafts are kept in Streamlit session state when navigating between pages.
 
 ### Guided career tools
-- **Interview Preparation** — a Mock Interview Centre plus the existing curated question bank, STAR practice with structure checkboxes, and a pre-interview checklist. Mock interview sessions are saved to the active profile; STAR practice drafts stay in the browser session.
+- **Interview Preparation** — a Mock Interview Centre plus the existing curated question bank, STAR practice with structure checkboxes and an optional AI model answer, and a pre-interview checklist. Mock interview sessions are saved to the active profile; STAR practice drafts stay in the browser session.
 - **Skills Assessment** — self-assessment across four skill groups, comparison with the saved profile, development priorities, and an explicit action to add selected skills to the profile.
 - **Career Guidance** — eight pathway summaries with entry roles, skills, practical next steps, and a profile-based starting suggestion.
 - **Job Search Support** — application checklist, trusted Kenyan job sources, application tips, a short email template, and scam-safety guidance.
 
 ### Mock Interview Centre
 - Start a text-based practice session for a target role and one of six interview categories: general, graduate and entry-level, internship and industrial attachment, behavioural and competency-based, customer service and administration, and technical and professional.
-- Choose beginner, intermediate, or advanced difficulty and a session length of three to six questions.
+- Choose beginner, intermediate, or advanced difficulty and a starting set of three to twenty-three curated questions. If fewer questions match the role, the session uses all available.
+- After the starting set is answered, generate AI follow-up questions and keep practising without a fixed session limit. AI follow-ups are clearly labelled as extra practice, not curated question-bank items.
 - See one question at a time, with the category, target position, question number, progress, assessment guidance, and answer-structure guidance.
 - Submit an answer only when it is non-empty. Duplicate submissions for the same question are rejected by the database.
 - Receive feedback on relevance, clarity, structure, examples, and next actions. Local question-bank guidance is always available; AI feedback is optional and clearly labelled.
@@ -84,7 +85,13 @@ If PowerShell blocks activation, run the command directly:
 - Incomplete sessions are saved safely. Cancelling a session keeps submitted answers in history and clearly marks the session as ended early.
 - Completed, incomplete, and ended-early records can be deleted from the review view after an explicit confirmation.
 - A bundled Google AI Studio adapter is available, but AI is off unless `.streamlit/secrets.toml` configures it. When no provider is configured, the interface says so and never pretends that AI feedback is active. See **AI provider configuration** below.
-- AI is called only when an answer is explicitly submitted, never on ordinary Streamlit reruns. If the provider fails, the answer is preserved and the interface falls back to clearly labelled local guidance.
+- AI feedback is called only when an answer is explicitly submitted, and AI follow-up questions only when the user presses the generate button. Neither happens on ordinary Streamlit reruns. If the provider fails, saved answers are preserved and the interface falls back to clearly labelled local guidance for answer feedback.
+
+### STAR practice
+- Choose a curated question, draft an answer, and mark the Situation, Task, Action, and Result parts manually.
+- If AI is configured, press **Generate AI model answer** to see one practice example, a STAR breakdown, and tips for adapting it. The model answer is clearly labelled as AI-generated and is not presented as the single correct answer.
+- The AI model answer uses only the selected question, target role, category, and difficulty. The user's draft answer, profile, and CV are not sent.
+- Model answers are kept in the Streamlit session for the active profile and question. They are not saved to the profile or database.
 
 These pages are transparent about their sources. Question-bank guidance and local feedback are never presented as AI-generated, and no statistics or user activity are fabricated.
 
@@ -143,12 +150,12 @@ The CLI imports the same `core` modules for database access and CV generation. C
 - The database remains at `data/kazimsaada.db`.
 - The JSON migration is still one-time and recorded in `migration_history`.
 - The original `data/profiles.json` is never modified or deleted.
-- Interview sessions and responses use two new tables, `interview_sessions` and `interview_responses`. They are created safely with `CREATE TABLE IF NOT EXISTS` and indexes, and migration checks can be repeated without deleting existing data. The existing startup initialization applies them automatically on the first run of the updated app.
-- Interview responses are linked to the existing `job_seekers` profile with foreign keys. Deleting a profile cascades to its interview sessions and responses.
-- Duplicate answers for the same question in one session are rejected by a unique constraint.
+- Interview sessions, responses, and AI follow-up questions use `interview_sessions`, `interview_responses`, and `interview_custom_questions`. They are created safely with `CREATE TABLE IF NOT EXISTS` and indexes, and migration checks can be repeated without deleting existing data. The existing startup initialization applies them automatically on the first run of the updated app.
+- Interview responses are linked to the existing `job_seekers` profile with foreign keys. Deleting a profile cascades to its interview sessions, responses, and AI follow-up questions.
+- Duplicate answers for the same question in one session are rejected by a unique constraint. Duplicate AI follow-up question text in the same session is also rejected.
 - Tests use temporary databases and temporary CV folders; they never touch real profiles.
 - Deleting a profile does not delete previously generated CV files from `data/cvs/`.
-- Profiles and CVs are not sent to an AI provider. When AI feedback is enabled, only the target role, interview category, difficulty, question, and submitted answer are sent. The provider is contacted only on explicit answer submission, not on page loads or ordinary reruns.
+- Profiles and CVs are not sent to an AI provider. AI answer feedback sends only the target role, category, difficulty, question, and submitted answer. AI follow-up questions send only the target role, category, difficulty, and previous question texts. AI model answers send only the selected question, target role, category, and difficulty. Each action requires an explicit button press; page loads and ordinary reruns do not call the network.
 
 ---
 
@@ -168,10 +175,10 @@ max_output_chars = 4000
 ```
 
 - Provider names are matched case-insensitively and ignore punctuation, so `GoogleAiStudio`, `google_ai_studio`, and `Google AI Studio` all work.
-- The adapter calls the Gemini API `generateContent` endpoint and requests structured JSON feedback.
-- Only the target role, interview category, difficulty, question, and submitted answer are sent. The full profile and CV documents are never included.
-- The provider is contacted only when the user explicitly submits an answer. Page loads and ordinary Streamlit reruns do not call the network.
-- If the key, model, network, quota, or provider response fails, the answer is still saved, the interface shows a warning, and local question-bank guidance is used. Local guidance is never labelled as AI-generated.
+- The adapter calls the Gemini API `generateContent` endpoint and requests structured JSON for answer feedback, follow-up questions, and STAR model answers.
+- Only the practice details needed for the selected action are sent: answer feedback uses the target role, category, difficulty, question, and submitted answer; follow-up questions use the target role, category, difficulty, and previous question texts; model answers use the selected question, target role, category, and difficulty. The full profile and CV documents are never included.
+- The provider is contacted only when the user explicitly submits an answer, presses the AI follow-up button, or presses the AI model-answer button. Page loads and ordinary Streamlit reruns do not call the network.
+- If the key, model, network, quota, or provider response fails, saved answers are preserved and the interface shows a warning. Answer feedback falls back to clearly labelled local guidance; AI follow-up questions and model answers are not fabricated. Local guidance is never labelled as AI-generated.
 - To disable AI, remove the `[ai]` section or leave `provider` empty. Save the file and restart Streamlit.
 
 The adapter lives in `core/ai_providers/google_ai_studio.py` and is registered through `register_ai_provider(...)`. Additional approved adapters can be added without changing the Mock Interview Centre, database schema, or local fallback. Do not put API keys in source code or commit `.streamlit/secrets.toml`.
@@ -186,7 +193,7 @@ Run the core test suite with the project virtual environment:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The suite covers the original core, database, profile and CV behaviour, the Phase 0 interview protections, and the Mock Interview Centre question bank, session persistence, ownership, completion, cancellation, migrations, AI fallback, and the optional Google AI Studio adapter. Provider tests use local fakes and never call Google or use a real credential.
+The suite covers the original core, database, profile and CV behaviour, the Phase 0 interview protections, and the Mock Interview Centre question bank, larger sessions, AI follow-up question persistence, session persistence, ownership, completion, cancellation, migrations, AI fallback, STAR model-answer normalisation, and the optional Google AI Studio adapter. Provider tests use local fakes and never call Google or use a real credential.
 
 Check syntax for every Python file:
 
@@ -211,6 +218,6 @@ Verify the web app starts:
 ## Notes and next steps
 
 - The CV builder currently stores generated documents in `data/cvs/`. A future version can add a CV record table if users need a searchable CV history.
-- The Mock Interview Centre stores text practice sessions and responses. It works with local guidance alone or with the optional Google AI Studio adapter. Human coach applications, approval, booking, and video calls remain for a later phase.
+- The Mock Interview Centre stores text practice sessions, responses, and AI follow-up questions. It works with local guidance alone or with the optional Google AI Studio adapter. AI follow-ups are unlimited in practice but have a high safety ceiling of about 1,000 generated questions per session; the user can also complete and start another session. Human coach applications, approval, booking, and video calls remain for a later phase.
 - The guided skills, guidance, and job-search pages can later connect to an AI service. That must remain opt-in and must not transmit personal data without explicit consent.
 - The Streamlit app is intended for local use. The profile selector is a convenience, not authentication. Do not expose `data/` or the SQLite file through a public web server until proper authentication and authorisation are added.

@@ -23,6 +23,8 @@ from core.ai_client import (  # noqa: E402
     AIProviderError,
     AISettings,
     FeedbackRequest,
+    ModelAnswerRequest,
+    QuestionRequest,
     ai_status,
     get_ai_provider,
     load_ai_settings,
@@ -200,6 +202,122 @@ class GoogleProviderRequestTests(unittest.TestCase):
         self.assertNotIn("education", prompt.casefold())
         self.assertNotIn("profile name", prompt.casefold())
 
+    def test_followup_question_request_contains_only_previous_questions(self) -> None:
+        provider = GoogleAIStudioProvider(test_settings())
+        request = QuestionRequest(
+            target_role="ICT support officer",
+            category="General job interview",
+            difficulty="intermediate",
+            previous_questions=("Tell me about yourself.", "Why this role?"),
+        )
+        captured: dict = {}
+
+        def fake_urlopen(http_request, timeout):
+            captured["body"] = json.loads(http_request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": json.dumps(
+                                            {
+                                                "question": "How would you explain a technical issue to a non-technical user?",
+                                                "assesses": "Communication.",
+                                                "structure": "Use a real example.",
+                                            }
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        with patch(
+            "core.ai_providers.google_ai_studio.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            result = provider.generate_question(request)
+
+        self.assertIn("non-technical user", result["question"])
+        body = captured["body"]
+        prompt = body["contents"][0]["parts"][0]["text"]
+        self.assertIn("ICT support officer", prompt)
+        self.assertIn("Tell me about yourself.", prompt)
+        self.assertIn("Why this role?", prompt)
+        self.assertNotIn("profile name", prompt.casefold())
+        self.assertNotIn("curriculum vitae", prompt.casefold())
+        self.assertIn("responseSchema", body["generationConfig"])
+        self.assertIn(
+            "question",
+            body["generationConfig"]["responseSchema"]["properties"],
+        )
+
+    def test_model_answer_request_contains_only_question_context(self) -> None:
+        provider = GoogleAIStudioProvider(test_settings())
+        request = ModelAnswerRequest(
+            target_role="Customer service assistant",
+            category="Customer service",
+            difficulty="beginner",
+            question="How do you handle an upset customer?",
+        )
+        captured: dict = {}
+
+        def fake_urlopen(http_request, timeout):
+            captured["body"] = json.loads(http_request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": json.dumps(
+                                            {
+                                                "model_answer": (
+                                                    "I would listen, acknowledge the "
+                                                    "concern, and agree the next step."
+                                                ),
+                                                "why_it_works": "It is calm and specific.",
+                                                "star_breakdown": {
+                                                    "situation": "An upset customer.",
+                                                    "task": "Resolve the concern.",
+                                                    "action": "Listened and agreed a step.",
+                                                    "result": "The customer felt heard.",
+                                                },
+                                                "tips": ["Use a real example."],
+                                            }
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        with patch(
+            "core.ai_providers.google_ai_studio.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            result = provider.generate_model_answer(request)
+
+        self.assertIn("listen", result["model_answer"])
+        body = captured["body"]
+        prompt = body["contents"][0]["parts"][0]["text"]
+        self.assertIn("Customer service assistant", prompt)
+        self.assertIn("How do you handle an upset customer?", prompt)
+        self.assertIn("square-bracket placeholders", prompt.casefold())
+        self.assertNotIn("your answer:", prompt.casefold())
+        self.assertNotIn("profile name", prompt.casefold())
+        self.assertIn(
+            "model_answer",
+            body["generationConfig"]["responseSchema"]["properties"],
+        )
+
     def test_code_fenced_json_is_accepted(self) -> None:
         provider = GoogleAIStudioProvider(test_settings())
         request = FeedbackRequest(
@@ -249,12 +367,99 @@ class GoogleProviderRequestTests(unittest.TestCase):
             "core.ai_providers.google_ai_studio.urlopen",
             side_effect=fake_urlopen,
         ):
-            with self.assertRaises(AIProviderError) as caught:
-                provider.generate_feedback(request)
+            with patch(
+                "core.ai_providers.google_ai_studio.time.sleep"
+            ) as sleep:
+                with self.assertRaises(AIProviderError) as caught:
+                    provider.generate_feedback(request)
 
         message = str(caught.exception)
         self.assertIn("rate limit", message.casefold())
         self.assertNotIn("test-key-not-a-real-credential", message)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_transient_server_error_is_retried(self) -> None:
+        provider = GoogleAIStudioProvider(test_settings())
+        request = FeedbackRequest(
+            target_role="ICT support officer",
+            category="Experience",
+            difficulty="intermediate",
+            question="Tell me about a project.",
+            answer="I completed a project and documented the result.",
+        )
+        calls = {"count": 0}
+
+        def fake_urlopen(http_request, timeout):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise HTTPError(
+                    http_request.full_url,
+                    503,
+                    "Service Unavailable",
+                    hdrs=None,
+                    fp=io.BytesIO(b""),
+                )
+            return FakeHttpResponse(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"text": json.dumps(sample_feedback())}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        with patch(
+            "core.ai_providers.google_ai_studio.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            with patch(
+                "core.ai_providers.google_ai_studio.time.sleep"
+            ) as sleep:
+                result = provider.generate_feedback(request)
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(result["summary"], sample_feedback()["summary"])
+
+    def test_non_retryable_client_error_is_not_retried(self) -> None:
+        provider = GoogleAIStudioProvider(test_settings())
+        request = FeedbackRequest(
+            target_role="ICT support officer",
+            category="Experience",
+            difficulty="intermediate",
+            question="Tell me about a project.",
+            answer="I completed a project and documented the result.",
+        )
+        calls = {"count": 0}
+
+        def fake_urlopen(http_request, timeout):
+            calls["count"] += 1
+            raise HTTPError(
+                http_request.full_url,
+                400,
+                "Bad Request",
+                hdrs=None,
+                fp=io.BytesIO(b""),
+            )
+
+        with patch(
+            "core.ai_providers.google_ai_studio.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            with patch(
+                "core.ai_providers.google_ai_studio.time.sleep"
+            ) as sleep:
+                with self.assertRaises(AIProviderError) as caught:
+                    provider.generate_feedback(request)
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(sleep.call_count, 0)
+        self.assertIn("rejected the request", str(caught.exception).casefold())
 
     def test_malformed_provider_responses_are_rejected(self) -> None:
         provider = GoogleAIStudioProvider(test_settings())

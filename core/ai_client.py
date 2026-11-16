@@ -22,18 +22,38 @@ class AIProviderNotConfigured(AIError):
 
 
 class AIProviderError(AIError):
-    """Raised when an approved provider cannot produce usable feedback."""
+    """Raised when an approved provider cannot produce usable output."""
 
 
 @dataclass(frozen=True)
 class FeedbackRequest:
-    """The minimum context sent to an AI provider."""
+    """The minimum context sent to an AI provider for answer feedback."""
 
     target_role: str
     category: str
     difficulty: str
     question: str
     answer: str
+
+
+@dataclass(frozen=True)
+class QuestionRequest:
+    """The minimum context sent to an AI provider for a follow-up question."""
+
+    target_role: str
+    category: str
+    difficulty: str
+    previous_questions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ModelAnswerRequest:
+    """The minimum context sent to an AI provider for a model answer."""
+
+    target_role: str
+    category: str
+    difficulty: str
+    question: str
 
 
 class AIProvider(Protocol):
@@ -46,6 +66,30 @@ class AIProvider(Protocol):
         request: FeedbackRequest,
     ) -> Mapping[str, Any]:
         """Return feedback containing relevance, clarity, structure and examples."""
+
+
+class AIQuestionProvider(Protocol):
+    """Optional interface for providers that can generate follow-up questions."""
+
+    name: str
+
+    def generate_question(
+        self,
+        request: QuestionRequest,
+    ) -> Mapping[str, Any]:
+        """Return one new practice question with assessment and structure notes."""
+
+
+class AIModelAnswerProvider(Protocol):
+    """Optional interface for providers that can draft a model answer."""
+
+    name: str
+
+    def generate_model_answer(
+        self,
+        request: ModelAnswerRequest,
+    ) -> Mapping[str, Any]:
+        """Return one practice model answer with STAR notes and tips."""
 
 
 @dataclass(frozen=True)
@@ -214,8 +258,9 @@ def ai_status(settings: AISettings | None = None) -> AIAvailability:
             configured=False,
             available=False,
             message=(
-                "AI feedback is not configured yet. Practice, saved sessions and "
-                "local question-bank guidance are still available."
+                "AI practice features are not configured yet. Practice, saved "
+                "sessions, manual STAR review and local question-bank guidance are "
+                "still available."
             ),
         )
 
@@ -227,7 +272,7 @@ def ai_status(settings: AISettings | None = None) -> AIAvailability:
             available=False,
             message=(
                 "An AI provider is configured, but no approved adapter is installed. "
-                "Local question-bank guidance will be used."
+                "Local question-bank guidance and manual STAR practice will be used."
             ),
         )
     except AIProviderError:
@@ -236,8 +281,8 @@ def ai_status(settings: AISettings | None = None) -> AIAvailability:
             available=False,
             message=(
                 "AI settings are present, but the provider is not ready. Local "
-                "question-bank guidance will be used. Check the model and API key "
-                "in .streamlit/secrets.toml."
+                "question-bank guidance and manual STAR practice will be used. "
+                "Check the model and API key in .streamlit/secrets.toml."
             ),
         )
 
@@ -246,12 +291,12 @@ def ai_status(settings: AISettings | None = None) -> AIAvailability:
             configured=False,
             available=False,
             message=(
-                "AI feedback is not configured yet. Local question-bank guidance "
-                "will be used."
+                "AI practice features are not configured yet. Local question-bank "
+                "guidance and manual STAR practice will be used."
             ),
         )
     return AIAvailability(
         configured=True,
         available=True,
-        message="AI-assisted practice feedback is configured for this workspace.",
+        message="AI-assisted interview practice is configured for this workspace.",
     )
