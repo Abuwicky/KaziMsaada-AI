@@ -25,6 +25,16 @@ class AIProviderError(AIError):
     """Raised when an approved provider cannot produce usable output."""
 
 
+def ai_setup_hint() -> str:
+    """Return a credential-safe setup hint for local and hosted deployments."""
+
+    return (
+        "On Streamlit Community Cloud, open Manage app -> Settings -> Secrets "
+        "and add the [ai] section. For local use, add it to "
+        ".streamlit/secrets.toml. Never commit the API key."
+    )
+
+
 @dataclass(frozen=True)
 class FeedbackRequest:
     """The minimum context sent to an AI provider for answer feedback."""
@@ -258,9 +268,9 @@ def ai_status(settings: AISettings | None = None) -> AIAvailability:
             configured=False,
             available=False,
             message=(
-                "AI practice features are not configured yet. Practice, saved "
-                "sessions, manual STAR review and local question-bank guidance are "
-                "still available."
+                "AI practice features are not configured yet. "
+                f"{ai_setup_hint()} Practice, saved sessions, manual STAR review "
+                "and local question-bank guidance are still available."
             ),
         )
 
@@ -280,9 +290,10 @@ def ai_status(settings: AISettings | None = None) -> AIAvailability:
             configured=True,
             available=False,
             message=(
-                "AI settings are present, but the provider is not ready. Local "
-                "question-bank guidance and manual STAR practice will be used. "
-                "Check the model and API key in .streamlit/secrets.toml."
+                "AI settings are present, but the provider is not ready. Check "
+                "the model and API key in the [ai] section of your Streamlit "
+                "secrets or .streamlit/secrets.toml. Local question-bank guidance "
+                "and manual STAR practice will be used."
             ),
         )
 
@@ -291,8 +302,9 @@ def ai_status(settings: AISettings | None = None) -> AIAvailability:
             configured=False,
             available=False,
             message=(
-                "AI practice features are not configured yet. Local question-bank "
-                "guidance and manual STAR practice will be used."
+                "AI practice features are not configured yet. "
+                f"{ai_setup_hint()} Local question-bank guidance and manual STAR "
+                "practice will be used."
             ),
         )
     return AIAvailability(

@@ -15,6 +15,7 @@ from core import (
     CV_DIR,
     DATABASE_FILE,
 )
+from core.ai_client import ai_status, load_ai_settings
 from core.cv import TEMPLATES, list_saved_cvs
 from core.database import get_database_connection
 
@@ -164,6 +165,25 @@ def render_settings_page(profiles: list[dict]) -> None:
         sub_section("Environment")
         st.caption(f"Python {platform.python_version()} · {platform.system()}")
         st.caption(f"Streamlit {st.__version__}")
+
+        sub_section("AI assistance")
+        ai_settings = load_ai_settings()
+        ai_availability = ai_status(ai_settings)
+        st.caption(
+            f"Provider: {ai_settings.provider or 'not configured'} · "
+            f"Model: {ai_settings.model or 'not configured'} · "
+            f"API key: {'present' if ai_settings.api_key else 'missing'}"
+        )
+        if ai_availability.available:
+            st.success(ai_availability.message)
+        elif ai_availability.configured:
+            st.warning(ai_availability.message)
+        else:
+            st.info(ai_availability.message)
+        st.caption(
+            "Streamlit Community Cloud: Manage app → Settings → Secrets. "
+            "Local: .streamlit/secrets.toml. Never commit the API key."
+        )
 
     st.markdown('<div class="km-space"></div>', unsafe_allow_html=True)
 

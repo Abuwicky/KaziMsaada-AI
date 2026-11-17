@@ -25,6 +25,7 @@ from core.ai_client import (  # noqa: E402
     FeedbackRequest,
     ModelAnswerRequest,
     QuestionRequest,
+    ai_setup_hint,
     ai_status,
     get_ai_provider,
     load_ai_settings,
@@ -118,6 +119,21 @@ class GoogleProviderRegistrationTests(unittest.TestCase):
         self.assertFalse(status.available)
         with self.assertRaises(AIProviderError):
             GoogleAIStudioProvider(missing_model)
+
+    def test_missing_configuration_points_to_cloud_secrets(self) -> None:
+        settings = load_ai_settings({})
+        status = ai_status(settings)
+        self.assertFalse(status.configured)
+        self.assertFalse(status.available)
+        self.assertIn("not configured", status.message)
+        self.assertIn("Streamlit Community Cloud", status.message)
+        self.assertIn("[ai]", status.message)
+        self.assertNotIn("api_key", status.message.casefold())
+
+        hint = ai_setup_hint()
+        self.assertIn("Settings", hint)
+        self.assertIn("Never commit", hint)
+        self.assertNotIn("api_key=", hint.casefold())
 
     def test_unknown_provider_remains_unavailable(self) -> None:
         settings = test_settings(

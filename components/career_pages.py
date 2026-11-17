@@ -597,10 +597,7 @@ def render_interview_page(profiles: list[dict]) -> None:
         elif availability.configured:
             st.info(availability.message)
         else:
-            st.caption(
-                "AI model answers are not configured. The STAR exercise still works "
-                "without AI."
-            )
+            st.info(availability.message)
 
         if isinstance(model_answer, dict):
             _render_model_answer(model_answer)

@@ -7,7 +7,7 @@ KaziMsaada AI now has two interfaces that share the same data and business logic
 - **Streamlit web application** — dashboard, profile management, CV builder with live preview, Mock Interview Centre, guided and self-assessed skills, career pathways, and job-search support.
 - **Original command-line application** — preserved and still runnable through `main.py`.
 
-Profiles and CVs are stored locally. Optional AI practice features use the provider configured in `.streamlit/secrets.toml`; when enabled, only the interview practice details needed for the selected action are sent to that provider. Your full profile and CV documents are not sent.
+Profiles and CVs are stored locally. Optional AI practice features use the provider configured in Streamlit secrets: `.streamlit/secrets.toml` for local use, or the Secrets panel in a Streamlit Community Cloud deployment. When enabled, only the interview practice details needed for the selected action are sent to that provider. Your full profile and CV documents are not sent.
 
 ---
 
@@ -84,7 +84,7 @@ If PowerShell blocks activation, run the command directly:
 - Review completed, incomplete, and ended-early sessions in a profile-specific practice history. Incomplete sessions can be continued later.
 - Incomplete sessions are saved safely. Cancelling a session keeps submitted answers in history and clearly marks the session as ended early.
 - Completed, incomplete, and ended-early records can be deleted from the review view after an explicit confirmation.
-- A bundled Google AI Studio adapter is available, but AI is off unless `.streamlit/secrets.toml` configures it. When no provider is configured, the interface says so and never pretends that AI feedback is active. See **AI provider configuration** below.
+- A bundled Google AI Studio adapter is available, but AI is off unless Streamlit secrets configure it: `.streamlit/secrets.toml` locally or the Secrets panel in Streamlit Community Cloud. When no provider is configured, the interface says so and never pretends that AI feedback is active. See **AI provider configuration** below.
 - AI feedback is called only when an answer is explicitly submitted, and AI follow-up questions only when the user presses the generate button. Neither happens on ordinary Streamlit reruns. If the provider fails, saved answers are preserved and the interface falls back to clearly labelled local guidance for answer feedback.
 
 ### STAR practice
@@ -139,6 +139,9 @@ KaziMsaada-ia/
 │   ├── career_pages.py
 │   ├── interview_centre.py # Mock Interview Centre UI
 │   └── settings.py
+├── .streamlit/
+│   ├── config.toml         # Theme and browser settings
+│   └── secrets.toml.example  # Safe template; real secrets.toml is ignored
 ├── data/
 │   ├── kazimsaada.db       # Existing SQLite database (do not delete)
 │   ├── profiles.json       # Original JSON backup/migration source
@@ -177,9 +180,11 @@ The CLI imports the same `core` modules for database access and CV generation. C
 
 ## AI provider configuration
 
-A built-in Google AI Studio adapter is included. It is opt-in: without an `[ai]` section in `.streamlit/secrets.toml`, the application uses only local question-bank guidance and says so clearly.
+A built-in Google AI Studio adapter is included. It is opt-in: without an `[ai]` section in Streamlit secrets, the application uses only local question-bank guidance and says so clearly.
 
-To enable AI-assisted practice feedback, create `.streamlit/secrets.toml` and configure an approved Google AI Studio key. Never commit this file.
+### Local development
+
+Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`, then replace the placeholder with your own Google AI Studio key. Never commit the real file.
 
 ```toml
 [ai]
@@ -189,6 +194,19 @@ api_key = "your-google-ai-studio-key"
 timeout_seconds = 20
 max_output_chars = 4000
 ```
+
+### Streamlit Community Cloud
+
+`.streamlit/secrets.toml` is intentionally listed in `.gitignore`. It is **not uploaded to GitHub and is not part of the deployed app**. A hosted app without a Cloud secret will correctly show that AI is not configured; that is a deployment-configuration issue, not a failed AI request.
+
+1. Open the app on `share.streamlit.io`.
+2. Select **Manage app**, then **Settings**, then **Secrets**.
+3. Paste the `[ai]` block above, using your real key.
+4. Save the secret and choose **Reboot app**.
+5. Open **Settings → AI assistance** in KaziMsaada. It should show the provider, model, and `API key: present`.
+6. Open **Interview Preparation → STAR practice** and use **Generate AI model answer**.
+
+If the app still reports that AI is not configured, check that the secret is inside an `[ai]` table and that the app was rebooted after saving. If the app shows a provider error instead, check the Cloud app logs for an authentication, model-availability, quota, or network message. Do not put the API key in `config.toml`, source code, or a GitHub commit.
 
 - Provider names are matched case-insensitively and ignore punctuation, so `GoogleAiStudio`, `google_ai_studio`, and `Google AI Studio` all work.
 - The adapter calls the Gemini API `generateContent` endpoint and requests structured JSON for answer feedback, follow-up questions, and STAR model answers.
