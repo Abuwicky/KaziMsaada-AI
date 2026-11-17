@@ -4,7 +4,7 @@
 
 KaziMsaada AI now has two interfaces that share the same data and business logic:
 
-- **Streamlit web application** — dashboard, profile management, CV builder with live preview, Mock Interview Centre, skills self-assessment, career pathways, and job-search support.
+- **Streamlit web application** — dashboard, profile management, CV builder with live preview, Mock Interview Centre, guided and self-assessed skills, career pathways, and job-search support.
 - **Original command-line application** — preserved and still runnable through `main.py`.
 
 Profiles and CVs are stored locally. Optional AI practice features use the provider configured in `.streamlit/secrets.toml`; when enabled, only the interview practice details needed for the selected action are sent to that provider. Your full profile and CV documents are not sent.
@@ -69,7 +69,7 @@ If PowerShell blocks activation, run the command directly:
 
 ### Guided career tools
 - **Interview Preparation** — a Mock Interview Centre plus the existing curated question bank, STAR practice with structure checkboxes and an optional AI model answer, and a pre-interview checklist. Mock interview sessions are saved to the active profile; STAR practice drafts stay in the browser session.
-- **Skills Assessment** — self-assessment across four skill groups, comparison with the saved profile, development priorities, and an explicit action to add selected skills to the profile.
+- **Skills Assessment** — a guided assessment area plus the original self-assessment. Guided assessments cover career areas or individual skills, use knowledge questions and practical exercises, save results to the active profile, and track comparable attempts over time. The self-assessment still lets you compare selections with your profile, choose development priorities, and explicitly add selected skills to the profile.
 - **Career Guidance** — eight pathway summaries with entry roles, skills, practical next steps, and a profile-based starting suggestion.
 - **Job Search Support** — application checklist, trusted Kenyan job sources, application tips, a short email template, and scam-safety guidance.
 
@@ -95,6 +95,17 @@ If PowerShell blocks activation, run the command directly:
 
 These pages are transparent about their sources. Question-bank guidance and local feedback are never presented as AI-generated, and no statistics or user activity are fabricated.
 
+### Guided skill assessments
+- Choose a career area or one individual skill from the existing skills library. Career areas are Digital and technical, Communication and people, Work readiness, and Practical and job-specific.
+- Take knowledge questions, practical exercises, or both. The initial bank covers 12 skills with four knowledge questions and one practical exercise per skill. Knowledge answers are marked deterministically against stable question IDs; practical responses are not given a fabricated automatic score.
+- Knowledge results use four clearly labelled, indicative bands: 0–39% Needs development, 40–59% Developing, 60–79% Competent foundation, and 80–100% Strong foundation. These describe performance on this practice assessment only. They are not a formal qualification, professional certification, or proof of workplace competence.
+- Practical exercises show marking criteria and expected answer elements for self-review. They are stored as practice evidence with no percentage score or proficiency band.
+- The interface shows one question at a time with a progress indicator and no countdown timer. Instructions explain what the assessment measures, the number of questions, how scoring works, and the limits of the result.
+- Results include the assessment name, completion date, method, score where measurable, proficiency band where applicable, strong areas, areas to improve, explanations for incorrect knowledge answers, practical review criteria, and practical next steps. Recommendations also connect to the existing `PATHWAYS` guidance where relevant.
+- Guided results are saved to the active profile in `skill_assessments` and `skill_assessment_responses`. Multiple attempts are kept, incomplete attempts can be resumed, and duplicate responses are rejected by a unique constraint. Previous results are never overwritten.
+- Results history lists saved attempts and compares progress only when the target, assessment method, and content version match. Practical-only attempts have no comparable score and are not treated as directly comparable with knowledge or combined attempts.
+- The guided assessment is deterministic and does not require AI. No assessment answer, profile, CV, or result is sent to an AI provider. A short assessment is practice, not a professional assessment service.
+
 ### Settings
 - Local workspace paths, privacy notes, profile JSON export, CV library, template list, and read-only developer diagnostics.
 
@@ -113,6 +124,8 @@ KaziMsaada-ia/
 │   ├── cv.py               # CV text, HTML preview, PDF generation
 │   ├── interview.py        # Question bank, selection, local feedback
 │   ├── interview_store.py  # Interview sessions and response persistence
+│   ├── skill_assessment.py # Guided assessment bank and deterministic scoring
+│   ├── skill_assessment_store.py  # Guided assessment persistence
 │   ├── ai_client.py        # Provider-neutral AI boundary and registry
 │   └── ai_providers/
 │       ├── __init__.py     # Built-in adapter registration
@@ -136,6 +149,7 @@ KaziMsaada-ia/
 │   ├── test_core.py
 │   ├── test_interview_phase0.py
 │   ├── test_interview.py
+│   ├── test_skill_assessment.py
 │   └── test_ai_provider.py
 ├── requirements.txt
 └── README.md
@@ -151,6 +165,8 @@ The CLI imports the same `core` modules for database access and CV generation. C
 - The JSON migration is still one-time and recorded in `migration_history`.
 - The original `data/profiles.json` is never modified or deleted.
 - Interview sessions, responses, and AI follow-up questions use `interview_sessions`, `interview_responses`, and `interview_custom_questions`. They are created safely with `CREATE TABLE IF NOT EXISTS` and indexes, and migration checks can be repeated without deleting existing data. The existing startup initialization applies them automatically on the first run of the updated app.
+- Guided skill assessments use `skill_assessments` and `skill_assessment_responses`. They are added with the same repeatable `CREATE TABLE IF NOT EXISTS` convention, indexes, and foreign keys; existing profiles and interview records are not replaced or deleted.
+- Guided assessments are linked to the existing `job_seekers` profile. Deleting a profile cascades to its assessments and responses. Duplicate answers for the same question in one assessment are rejected by a unique constraint.
 - Interview responses are linked to the existing `job_seekers` profile with foreign keys. Deleting a profile cascades to its interview sessions, responses, and AI follow-up questions.
 - Duplicate answers for the same question in one session are rejected by a unique constraint. Duplicate AI follow-up question text in the same session is also rejected.
 - Tests use temporary databases and temporary CV folders; they never touch real profiles.
@@ -193,7 +209,7 @@ Run the core test suite with the project virtual environment:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The suite covers the original core, database, profile and CV behaviour, the Phase 0 interview protections, and the Mock Interview Centre question bank, larger sessions, AI follow-up question persistence, session persistence, ownership, completion, cancellation, migrations, AI fallback, STAR model-answer normalisation, and the optional Google AI Studio adapter. Provider tests use local fakes and never call Google or use a real credential.
+The suite covers the original core, database, profile and CV behaviour, the Phase 0 interview protections, and the Mock Interview Centre question bank, larger sessions, AI follow-up question persistence, session persistence, ownership, completion, cancellation, migrations, AI fallback, STAR model-answer normalisation, and the optional Google AI Studio adapter. Guided-assessment tests cover the 12-skill bank, stable question IDs, correct and incorrect marking, score and proficiency boundaries, practical criteria without automatic scoring, saving, multiple attempts, history, profile isolation, incomplete attempts, duplicate protection, cascade deletion, and repeatable migrations. Provider tests use local fakes and never call Google or use a real credential.
 
 Check syntax for every Python file:
 
@@ -219,5 +235,5 @@ Verify the web app starts:
 
 - The CV builder currently stores generated documents in `data/cvs/`. A future version can add a CV record table if users need a searchable CV history.
 - The Mock Interview Centre stores text practice sessions, responses, and AI follow-up questions. It works with local guidance alone or with the optional Google AI Studio adapter. AI follow-ups are unlimited in practice but have a high safety ceiling of about 1,000 generated questions per session; the user can also complete and start another session. Human coach applications, approval, booking, and video calls remain for a later phase.
-- The guided skills, guidance, and job-search pages can later connect to an AI service. That must remain opt-in and must not transmit personal data without explicit consent.
+- The guided skill assessment is intentionally deterministic and works without AI. Optional AI feedback could be considered later, but it would need to remain opt-in, clearly labelled, and separate from the deterministic score. The guidance and job-search pages can also connect to an AI service later only with explicit consent and without transmitting personal data unnecessarily.
 - The Streamlit app is intended for local use. The profile selector is a convenience, not authentication. Do not expose `data/` or the SQLite file through a public web server until proper authentication and authorisation are added.
