@@ -241,6 +241,254 @@ def initialize_database(db_path: str | Path | None = None) -> None:
             """
         )
 
+        # Mentor Meeting Centre. These tables are additive: existing profiles,
+        # CVs, interview sessions and assessments are never rewritten.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mentor_applications (
+                application_id TEXT PRIMARY KEY,
+                applicant_profile_id TEXT,
+                full_name TEXT NOT NULL,
+                email TEXT NOT NULL,
+                professional_title TEXT NOT NULL,
+                industry TEXT NOT NULL,
+                specialisation TEXT NOT NULL DEFAULT '',
+                areas_of_expertise TEXT NOT NULL DEFAULT '[]',
+                experience TEXT NOT NULL,
+                biography TEXT NOT NULL,
+                qualifications TEXT NOT NULL,
+                languages TEXT NOT NULL DEFAULT '[]',
+                supporting_info TEXT NOT NULL DEFAULT '',
+                avatar_url TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'rejected')),
+                review_note TEXT,
+                reviewed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (applicant_profile_id)
+                    REFERENCES job_seekers(profile_id)
+                    ON DELETE SET NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mentor_profiles (
+                mentor_id TEXT PRIMARY KEY,
+                application_id TEXT NOT NULL UNIQUE,
+                full_name TEXT NOT NULL,
+                professional_title TEXT NOT NULL,
+                biography TEXT NOT NULL,
+                industry TEXT NOT NULL,
+                specialisation TEXT NOT NULL,
+                experience TEXT NOT NULL,
+                qualifications TEXT NOT NULL,
+                languages TEXT NOT NULL DEFAULT '[]',
+                coaching_areas TEXT NOT NULL DEFAULT '[]',
+                duration_options TEXT NOT NULL DEFAULT '[30, 45, 60]',
+                avatar_url TEXT NOT NULL DEFAULT '',
+                approval_status TEXT NOT NULL DEFAULT 'approved'
+                    CHECK (approval_status IN ('approved', 'suspended')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (application_id)
+                    REFERENCES mentor_applications(application_id)
+                    ON DELETE RESTRICT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mentor_access (
+                mentor_id TEXT PRIMARY KEY,
+                access_code_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                rotated_at TEXT,
+                FOREIGN KEY (mentor_id)
+                    REFERENCES mentor_profiles(mentor_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mentor_availability (
+                slot_id TEXT PRIMARY KEY,
+                mentor_id TEXT NOT NULL,
+                start_at_utc TEXT NOT NULL,
+                end_at_utc TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL
+                    CHECK (duration_minutes IN (30, 45, 60, 90)),
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'booked', 'removed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (mentor_id)
+                    REFERENCES mentor_profiles(mentor_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mentor_bookings (
+                booking_id TEXT PRIMARY KEY,
+                booking_reference TEXT NOT NULL UNIQUE,
+                profile_id TEXT NOT NULL,
+                mentor_id TEXT NOT NULL,
+                availability_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN (
+                        'pending',
+                        'confirmed',
+                        'rejected',
+                        'cancelled',
+                        'completed'
+                    )),
+                purpose TEXT NOT NULL,
+                target_job_role TEXT NOT NULL DEFAULT '',
+                scheduled_start_utc TEXT NOT NULL,
+                scheduled_end_utc TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL
+                    CHECK (duration_minutes IN (30, 45, 60, 90)),
+                meeting_link TEXT,
+                mentor_recommendations TEXT NOT NULL DEFAULT '',
+                reschedule_requested_at TEXT,
+                reschedule_note TEXT,
+                cancellation_reason TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                confirmed_at TEXT,
+                cancelled_at TEXT,
+                completed_at TEXT,
+                FOREIGN KEY (profile_id)
+                    REFERENCES job_seekers(profile_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (mentor_id)
+                    REFERENCES mentor_profiles(mentor_id)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY (availability_id)
+                    REFERENCES mentor_availability(slot_id)
+                    ON DELETE RESTRICT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mentor_feedback (
+                feedback_id TEXT PRIMARY KEY,
+                booking_id TEXT NOT NULL UNIQUE,
+                profile_id TEXT NOT NULL,
+                mentor_id TEXT NOT NULL,
+                rating INTEGER NOT NULL
+                    CHECK (rating BETWEEN 1 AND 5),
+                comment TEXT NOT NULL DEFAULT '',
+                helpful INTEGER NOT NULL DEFAULT 1
+                    CHECK (helpful IN (0, 1)),
+                further_support TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (booking_id)
+                    REFERENCES mentor_bookings(booking_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (profile_id)
+                    REFERENCES job_seekers(profile_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (mentor_id)
+                    REFERENCES mentor_profiles(mentor_id)
+                    ON DELETE RESTRICT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mentor_pending_application_email
+            ON mentor_applications(lower(email))
+            WHERE status = 'pending'
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_applications_status_created
+            ON mentor_applications(status, created_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_applications_profile
+            ON mentor_applications(applicant_profile_id, created_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_profiles_public
+            ON mentor_profiles(approval_status, industry, full_name)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_availability_mentor_start
+            ON mentor_availability(mentor_id, start_at_utc)
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mentor_availability_unique_start
+            ON mentor_availability(mentor_id, start_at_utc)
+            WHERE status != 'removed'
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_bookings_profile_created
+            ON mentor_bookings(profile_id, created_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_bookings_mentor_created
+            ON mentor_bookings(mentor_id, created_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_bookings_status_start
+            ON mentor_bookings(mentor_id, status, scheduled_start_utc)
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mentor_bookings_active_slot
+            ON mentor_bookings(availability_id)
+            WHERE status IN ('pending', 'confirmed')
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_feedback_mentor
+            ON mentor_feedback(mentor_id, created_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_mentor_booking_delete_reopen_slot
+            AFTER DELETE ON mentor_bookings
+            BEGIN
+                UPDATE mentor_availability
+                SET status = 'open'
+                WHERE slot_id = OLD.availability_id
+                  AND status = 'booked'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM mentor_bookings
+                      WHERE availability_id = OLD.availability_id
+                        AND status IN ('pending', 'confirmed')
+                  );
+            END
+            """
+        )
+
 
 def migrate_json_profiles(
     profile_file: str | Path | None = None,

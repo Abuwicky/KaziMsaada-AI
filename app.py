@@ -30,7 +30,7 @@ st.set_page_config(
     page_title=f"{APP_DISPLAY_NAME} · Career Readiness",
     page_icon="🧭",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 

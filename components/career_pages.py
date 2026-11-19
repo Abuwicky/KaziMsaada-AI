@@ -42,6 +42,7 @@ from core.skill_assessment_store import (
 )
 
 from .interview_centre import render_interview_centre
+from .mentor_centre import render_mentor_centre
 from .ui import (
     format_date,
     go_to,
@@ -480,9 +481,10 @@ def render_interview_page(profiles: list[dict]) -> None:
             "practise answers; they stay in this Streamlit session and are not saved."
         )
 
-    tab_centre, tab_questions, tab_practice, tab_before = st.tabs(
+    tab_centre, tab_mentor, tab_questions, tab_practice, tab_before = st.tabs(
         [
             "Mock Interview Centre",
+            "Mentor Meeting Centre",
             "Question bank",
             "STAR practice",
             "Before the interview",
@@ -491,6 +493,9 @@ def render_interview_page(profiles: list[dict]) -> None:
 
     with tab_centre:
         render_interview_centre(profile)
+
+    with tab_mentor:
+        render_mentor_centre(profile)
 
     with tab_questions:
         st.markdown(

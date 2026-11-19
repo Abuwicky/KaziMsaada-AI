@@ -763,16 +763,30 @@ def render_cv_builder(profiles: list[dict]) -> None:
         if stored_template not in TEMPLATES:
             stored_template = "classic"
 
-        template = st.radio(
+        template = st.selectbox(
             "CV template",
             template_keys,
             index=template_keys.index(stored_template),
             format_func=lambda key: TEMPLATES[key]["name"],
-            horizontal=True,
-            key=f"cv_template_choice_{pid}",
+            key=f"cv_template_picker_{pid}",
             label_visibility="collapsed",
         )
-        st.caption(TEMPLATES[template]["description"])
+        meta = TEMPLATES[template]
+        st.markdown(
+            f"""
+            <div class="km-template-row">
+              <span class="km-template-swatch" style="background:{meta['accent']}"></span>
+              <div>
+                <strong>{html.escape(meta['name'])}</strong>
+                <span>{html.escape(meta['description'])}</span>
+                <span>Best for: {html.escape(meta.get('best_for', 'General use'))} ·
+                ATS: {html.escape(meta.get('ats', 'Best'))}</span>
+              </div>
+              <code>{html.escape(template)}</code>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.session_state["cv_template"] = template
 
         st.markdown(

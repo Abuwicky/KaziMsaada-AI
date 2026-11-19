@@ -265,9 +265,10 @@ class CvTests(unittest.TestCase):
         profile["name"] = "<script>alert(1)</script>"
         html = build_cv_html(profile, SAMPLE_CV, "modern")
 
-        self.assertIn("&lt;script&gt;", html)
-        self.assertNotIn("<script>alert(1)</script>", html)
-        self.assertIn("cv-modern", html)
+        lowered = html.lower()
+        self.assertIn("&lt;script&gt;", lowered)
+        self.assertNotIn("<script>alert(1)</script>", lowered)
+        self.assertIn("hs-rule_accent", html)
 
     def test_pdf_generation_to_buffer(self) -> None:
         buffer = io.BytesIO()
@@ -283,6 +284,30 @@ class CvTests(unittest.TestCase):
                 buffer = io.BytesIO()
                 generate_cv_pdf(build_cv_content(self.profile, SAMPLE_CV), buffer, template)
                 self.assertTrue(buffer.getvalue().startswith(b"%PDF"))
+
+    def test_every_template_has_project_metadata_and_html(self) -> None:
+        for template, meta in TEMPLATES.items():
+            with self.subTest(template=template):
+                for field in (
+                    "name",
+                    "description",
+                    "best_for",
+                    "ats",
+                    "accent",
+                    "muted",
+                    "layout",
+                    "section_order",
+                ):
+                    self.assertTrue(meta.get(field), field)
+                self.assertIn(meta["layout"], {"single", "sidebar"})
+                self.assertIn(meta["ats"], {"Best", "Good", "Use with care"})
+                self.assertRegex(meta["accent"], r"^#[0-9A-Fa-f]{6}$")
+                self.assertRegex(meta["muted"], r"^#[0-9A-Fa-f]{6}$")
+                html = build_cv_html(self.profile, SAMPLE_CV, template)
+                self.assertIn("<!DOCTYPE html>", html)
+                self.assertIn('class="sheet', html)
+                if meta["layout"] == "sidebar":
+                    self.assertIn("side-col", html)
 
     def test_save_bundle_and_list(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

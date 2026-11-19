@@ -133,8 +133,10 @@ def render_settings_page(profiles: list[dict]) -> None:
                   <div>
                     <strong>{html.escape(meta['name'])}</strong>
                     <span>{html.escape(meta['description'])}</span>
+                    <span>Best for: {html.escape(meta.get('best_for', 'General use'))} ·
+                    ATS: {html.escape(meta.get('ats', 'Best'))}</span>
                   </div>
-                  <code>{template_id}</code>
+                  <code>{html.escape(template_id)}</code>
                 </div>
                 """,
                 unsafe_allow_html=True,

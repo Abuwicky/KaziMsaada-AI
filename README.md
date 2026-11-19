@@ -4,7 +4,7 @@
 
 KaziMsaada AI now has two interfaces that share the same data and business logic:
 
-- **Streamlit web application** — dashboard, profile management, CV builder with live preview, Mock Interview Centre, guided and self-assessed skills, career pathways, and job-search support.
+- **Streamlit web application** — dashboard, profile management, CV builder with live preview, Mock Interview Centre, Mentor Meeting Centre, guided and self-assessed skills, career pathways, and job-search support.
 - **Original command-line application** — preserved and still runnable through `main.py`.
 
 Profiles and CVs are stored locally. Optional AI practice features use the provider configured in Streamlit secrets: `.streamlit/secrets.toml` for local use, or the Secrets panel in a Streamlit Community Cloud deployment. When enabled, only the interview practice details needed for the selected action are sent to that provider. Your full profile and CV documents are not sent.
@@ -57,7 +57,9 @@ If PowerShell blocks activation, run the command directly:
 
 ### CV Builder
 - Profile-driven CV creation.
-- Three existing templates: Classic Professional, Modern Professional, Graduate and Early-Career.
+- Ten built-in templates: Classic Professional, Modern Professional, Graduate and Early-Career, ATS Plain, Sidebar, Executive, Compact One-Page, Skills First, Creative Band, and Technical.
+- A single structured CV document drives the text export, live HTML preview, and downloadable PDF, so templates stay consistent across all three outputs.
+- The template picker shows what each template is best for and its ATS suitability. ATS Plain is the safest choice for automated application portals; Sidebar is marked for direct or print use, and Creative Band is flagged for creative roles.
 - Two-column workspace: editable form and live HTML preview.
 - Personal details, target role, summary, education, work experience, projects, volunteering, certifications, languages, skills, and referees.
 - **Work experience cards** support job title, organisation, location, start date, end date, “currently work here”, and responsibilities/achievements. Add, edit, and remove individual entries; current roles display **Present** in the CV. Internships, attachments, volunteering, freelance work, and other practical experience use the same cards. Tick **I do not have formal work experience yet** to build a graduate CV from education, projects, volunteering, certifications, and skills.
@@ -68,7 +70,7 @@ If PowerShell blocks activation, run the command directly:
 - Unsaved drafts are kept in Streamlit session state when navigating between pages.
 
 ### Guided career tools
-- **Interview Preparation** — a Mock Interview Centre plus the existing curated question bank, STAR practice with structure checkboxes and an optional AI model answer, and a pre-interview checklist. Mock interview sessions are saved to the active profile; STAR practice drafts stay in the browser session.
+- **Interview Preparation** — a Mock Interview Centre, Mentor Meeting Centre, the existing curated question bank, STAR practice with structure checkboxes and an optional AI model answer, and a pre-interview checklist. Mock interview sessions are saved to the active profile; STAR practice drafts stay in the browser session.
 - **Skills Assessment** — a guided assessment area plus the original self-assessment. Guided assessments cover career areas or individual skills, use knowledge questions and practical exercises, save results to the active profile, and track comparable attempts over time. The self-assessment still lets you compare selections with your profile, choose development priorities, and explicitly add selected skills to the profile.
 - **Career Guidance** — eight pathway summaries with entry roles, skills, practical next steps, and a profile-based starting suggestion.
 - **Job Search Support** — application checklist, trusted Kenyan job sources, application tips, a short email template, and scam-safety guidance.
@@ -86,6 +88,38 @@ If PowerShell blocks activation, run the command directly:
 - Completed, incomplete, and ended-early records can be deleted from the review view after an explicit confirmation.
 - A bundled Google AI Studio adapter is available, but AI is off unless Streamlit secrets configure it: `.streamlit/secrets.toml` locally or the Secrets panel in Streamlit Community Cloud. When no provider is configured, the interface says so and never pretends that AI feedback is active. See **AI provider configuration** below.
 - AI feedback is called only when an answer is explicitly submitted, and AI follow-up questions only when the user presses the generate button. Neither happens on ordinary Streamlit reruns. If the provider fails, saved answers are preserved and the interface falls back to clearly labelled local guidance for answer feedback.
+
+### Mentor Meeting Centre
+- A fifth tab inside **Interview Preparation** for one-to-one human coaching, kept separate from AI mock-interview practice.
+- **Find a mentor** lists only approved mentors. Pending, rejected, and suspended applicants are never shown as bookable. Job seekers can search by name, skill, or industry and view public experience, qualifications, languages, coaching areas, and session lengths.
+- **Apply to mentor** collects a professional title, industry, primary specialisation, areas of expertise, experience, biography, qualifications, languages, and optional supporting information. Duplicate pending applications for the same email are rejected by a partial unique index.
+- **Admin review** is an explicit access-code-gated workspace. Administrators can approve or reject applications, see review notes, and issue a replacement mentor access code if the original is lost. Approval creates the public mentor profile and a one-time mentor access code; only a PBKDF2 hash is stored.
+- **Mentor workspace** is unlocked with the mentor's private access code. Mentors can edit only their own public profile, add and remove availability, confirm or reject their own requests, add a private meeting link, mark a meeting completed, and add preparation recommendations after the session.
+- **My meetings** is scoped to the active job-seeker profile. It shows requests, confirmed meetings, cancellations, completed sessions, the private meeting link when the mentor has added it, and a feedback form after completion.
+- Availability is entered in **Africa/Nairobi** and stored in UTC. Session lengths are 30, 45, 60, or 90 minutes, limited to the durations each mentor offers. The store rejects overlapping availability and bookings; partial unique indexes also prevent two active bookings for one slot, duplicate feedback, and duplicate pending applications.
+- Bookings move through `pending`, `confirmed`, `rejected`, `cancelled`, and `completed`. Each booking has a unique reference. Job seekers can cancel or request a different time; mentors see the request and can clear it after agreeing a new arrangement.
+- Meeting links must be complete `https://` URLs. They are visible only to the job seeker on that booking and the mentor who owns it; they are not included in public profiles or administrator application views. The app does not invent video rooms or create fake links.
+- Feedback is a 1–5 rating plus an optional comment, helpfulness answer, and further-support note. A booking can receive at most one feedback record.
+- No mentor identities, qualifications, availability, or testimonials are seeded. The directory stays empty until a real application is approved.
+
+### Mentor and administrator access
+- The existing profile selector is a local convenience, **not authentication**. It is not used as administrator security.
+- Administrator review requires a strong code in Streamlit secrets:
+  ```toml
+  [mentor_admin]
+  access_code = "replace-with-a-long-random-code"
+  # Stronger option: store only a PBKDF2 hash
+  # access_code_hash = "pbkdf2_sha256$..."
+  ```
+  For local or container deployments, `MENTOR_ADMIN_ACCESS_CODE` or `MENTOR_ADMIN_ACCESS_CODE_HASH` can be supplied as environment variables instead.
+- Mentor workspaces use per-mentor access codes generated at approval. The raw code is shown to the administrator once; SQLite stores only a salted PBKDF2 hash. A replacement invalidates the previous code.
+- This is stronger than reusing a profile selector, but it is still not a complete public multi-user authentication system. A production deployment should add verified sign-in, email ownership checks, role management, rate limiting, audit logs, and CSRF/session hardening.
+
+### Responsive layout
+- The Streamlit interface is tested at 320, 375, 390, 430, 768, 1024, and 1440px widths.
+- At phone widths, Streamlit columns stack full width, buttons meet a 44px touch target, tab bars scroll horizontally without hiding tabs, text wraps, and long code/URLs do not force page-level horizontal scrolling.
+- The sidebar uses Streamlit's `auto` initial state so it starts collapsed on small screens and expanded on wide screens. The native expand/collapse controls remain visible.
+- The CV editor stacks its editor and preview when width is tight. The Mentor Meeting Centre cards and booking summaries collapse to single-column layouts on phones.
 
 ### STAR practice
 - Choose a curated question, draft an answer, and mark the Situation, Task, Action, and Result parts manually.
@@ -124,6 +158,9 @@ KaziMsaada-ia/
 │   ├── cv.py               # CV text, HTML preview, PDF generation
 │   ├── interview.py        # Question bank, selection, local feedback
 │   ├── interview_store.py  # Interview sessions and response persistence
+│   ├── mentors.py          # Mentor validation, UTC/Nairobi time, booking rules
+│   ├── mentor_access.py    # Mentor and administrator access-code hashing
+│   ├── mentor_store.py     # Mentor applications, profiles, availability, bookings, feedback
 │   ├── skill_assessment.py # Guided assessment bank and deterministic scoring
 │   ├── skill_assessment_store.py  # Guided assessment persistence
 │   ├── ai_client.py        # Provider-neutral AI boundary and registry
@@ -138,6 +175,7 @@ KaziMsaada-ia/
 │   ├── cv_components.py
 │   ├── career_pages.py
 │   ├── interview_centre.py # Mock Interview Centre UI
+│   ├── mentor_centre.py    # Mentor Meeting Centre UI
 │   └── settings.py
 ├── .streamlit/
 │   ├── config.toml         # Theme and browser settings
@@ -153,6 +191,7 @@ KaziMsaada-ia/
 │   ├── test_interview_phase0.py
 │   ├── test_interview.py
 │   ├── test_skill_assessment.py
+│   ├── test_mentor.py
 │   └── test_ai_provider.py
 ├── requirements.txt
 └── README.md
@@ -172,6 +211,9 @@ The CLI imports the same `core` modules for database access and CV generation. C
 - Guided assessments are linked to the existing `job_seekers` profile. Deleting a profile cascades to its assessments and responses. Duplicate answers for the same question in one assessment are rejected by a unique constraint.
 - Interview responses are linked to the existing `job_seekers` profile with foreign keys. Deleting a profile cascades to its interview sessions, responses, and AI follow-up questions.
 - Duplicate answers for the same question in one session are rejected by a unique constraint. Duplicate AI follow-up question text in the same session is also rejected.
+- The Mentor Meeting Centre uses additive tables: `mentor_applications`, `mentor_profiles`, `mentor_access`, `mentor_availability`, `mentor_bookings`, and `mentor_feedback`. They are created with repeatable `CREATE TABLE IF NOT EXISTS` statements and indexes; existing profiles, CVs, interviews, and assessments are untouched.
+- Mentor access codes are stored only as salted PBKDF2 hashes. Public mentor projections exclude application IDs, email addresses, access hashes, and booking details.
+- Partial unique indexes prevent two active bookings for one slot, duplicate pending applications for the same email, and duplicate feedback for one booking. A trigger reopens a reserved slot if a profile deletion cascades to its booking.
 - Tests use temporary databases and temporary CV folders; they never touch real profiles.
 - Deleting a profile does not delete previously generated CV files from `data/cvs/`.
 - Profiles and CVs are not sent to an AI provider. AI answer feedback sends only the target role, category, difficulty, question, and submitted answer. AI follow-up questions send only the target role, category, difficulty, and previous question texts. AI model answers send only the selected question, target role, category, and difficulty. Each action requires an explicit button press; page loads and ordinary reruns do not call the network.
@@ -227,7 +269,9 @@ Run the core test suite with the project virtual environment:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The suite covers the original core, database, profile and CV behaviour, the Phase 0 interview protections, and the Mock Interview Centre question bank, larger sessions, AI follow-up question persistence, session persistence, ownership, completion, cancellation, migrations, AI fallback, STAR model-answer normalisation, and the optional Google AI Studio adapter. Guided-assessment tests cover the 12-skill bank, stable question IDs, correct and incorrect marking, score and proficiency boundaries, practical criteria without automatic scoring, saving, multiple attempts, history, profile isolation, incomplete attempts, duplicate protection, cascade deletion, and repeatable migrations. Provider tests use local fakes and never call Google or use a real credential.
+The suite covers the original core, database, profile and CV behaviour, all ten CV templates for text/HTML/PDF output and metadata, the Phase 0 interview protections, and the Mock Interview Centre question bank, larger sessions, AI follow-up question persistence, session persistence, ownership, completion, cancellation, migrations, AI fallback, STAR model-answer normalisation, and the optional Google AI Studio adapter. Guided-assessment tests cover the 12-skill bank, stable question IDs, correct and incorrect marking, score and proficiency boundaries, practical criteria without automatic scoring, saving, multiple attempts, history, profile isolation, incomplete attempts, duplicate protection, cascade deletion, and repeatable migrations. Mentor tests cover application validation and duplicate prevention, approval and rejection, approved-only public visibility, profile updates, access-code authentication and rotation, Nairobi/UTC conversion, availability overlap and editing, double-booking protection, confirmation and rejection, cancellation, rescheduling, private meeting-link validation and permissions, completed-session feedback and duplicate prevention, cross-profile isolation, reservation release after profile deletion, and repeatable additive schema creation. Provider tests use local fakes and never call Google or use a real credential.
+
+The current suite contains 150 tests. During this implementation the browser flow was exercised end to end against a temporary database: submit an application, approve it through the administrator workspace, receive a one-time mentor code, sign in as the mentor, add availability, book as a job seeker, confirm as the mentor, add a private `https://` meeting link, and view it in **My meetings**. Responsive layout checks were run at 320, 375, 390, 430, 768, 1024, and 1440px; no page-level horizontal overflow was detected, columns stacked at phone widths, and tab bars remained horizontally scrollable.
 
 Check syntax for every Python file:
 
@@ -252,6 +296,7 @@ Verify the web app starts:
 ## Notes and next steps
 
 - The CV builder currently stores generated documents in `data/cvs/`. A future version can add a CV record table if users need a searchable CV history.
-- The Mock Interview Centre stores text practice sessions, responses, and AI follow-up questions. It works with local guidance alone or with the optional Google AI Studio adapter. AI follow-ups are unlimited in practice but have a high safety ceiling of about 1,000 generated questions per session; the user can also complete and start another session. Human coach applications, approval, booking, and video calls remain for a later phase.
+- The Mock Interview Centre stores text practice sessions, responses, and AI follow-up questions. It works with local guidance alone or with the optional Google AI Studio adapter. AI follow-ups are unlimited in practice but have a high safety ceiling of about 1,000 generated questions per session; the user can also complete and start another session.
+- The Mentor Meeting Centre now supports human mentor applications, administrator approval, availability, booking, cancellation, rescheduling requests, private meeting links, and post-session feedback. Real video rooms are not generated by the app; mentors supply a validated `https://` link. The next production step is full authentication, verified mentor identity, email notifications, and audit logging.
 - The guided skill assessment is intentionally deterministic and works without AI. Optional AI feedback could be considered later, but it would need to remain opt-in, clearly labelled, and separate from the deterministic score. The guidance and job-search pages can also connect to an AI service later only with explicit consent and without transmitting personal data unnecessarily.
 - The Streamlit app is intended for local use. The profile selector is a convenience, not authentication. Do not expose `data/` or the SQLite file through a public web server until proper authentication and authorisation are added.
