@@ -7,6 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from core.auth import privacy_summary
 from core.cv import TEMPLATES, list_saved_cvs
 from core.profiles import profile_completeness
 
@@ -91,7 +92,7 @@ def render_dashboard(profiles: list[dict]) -> None:
             <p>{intro}</p>
             <div class="km-hero-note">
               <span class="km-status-dot"></span>
-              Private by design · profiles and CVs stay on this computer
+              Private by design · {html.escape(privacy_summary())}
             </div>
           </div>
           <div class="km-hero-mark">{icon("compass", 72)}</div>
@@ -123,7 +124,7 @@ def render_dashboard(profiles: list[dict]) -> None:
 
     metric_cols = st.columns(4)
     metrics = [
-        ("Saved profiles", len(profiles), "Career profiles in your local database", "user"),
+        ("Saved profiles", len(profiles), "Career profiles in your workspace", "user"),
         ("CVs generated", len(cvs), "PDF documents in your CV library", "file"),
         ("Career tools", 6, "Profile, CV, interview, skills, guidance, jobs", "compass"),
         (
@@ -162,7 +163,7 @@ def render_dashboard(profiles: list[dict]) -> None:
             "tool_cv_improve",
             "sparkles",
             "Improve an Existing CV",
-            "Refine your summary, experience and skills, then compare three professional templates.",
+            "Refine your summary, experience and skills, then compare the template gallery.",
             "CV Builder",
             "Available",
             "available",
@@ -278,7 +279,7 @@ def render_dashboard(profiles: list[dict]) -> None:
             st.info("Saved profiles will appear here once you create one.")
 
     st.markdown('<div class="km-space"></div>', unsafe_allow_html=True)
-    section_header("Recent CV documents", "Only files that actually exist in your local CV folder are shown.")
+    section_header("Recent CV documents", "Only files that actually exist in your CV folder are shown.")
 
     if cvs:
         for cv in cvs[:3]:

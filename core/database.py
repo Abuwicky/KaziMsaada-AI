@@ -19,6 +19,24 @@ from .config import DATABASE_FILE, PROFILE_FILE
 MIGRATION_NAME = "json_profiles_to_sqlite_v1"
 
 
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    """Add a column to an existing table without touching existing rows."""
+
+    existing = {
+        row["name"]
+        for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+    }
+    if column not in existing:
+        connection.execute(
+            f'ALTER TABLE "{table}" ADD COLUMN "{column}" {definition}'
+        )
+
+
 @contextmanager
 def get_database_connection(
     db_path: str | Path | None = None,
@@ -55,6 +73,7 @@ def initialize_database(db_path: str | Path | None = None) -> None:
             """
             CREATE TABLE IF NOT EXISTS job_seekers (
                 profile_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL DEFAULT 'local',
                 name TEXT NOT NULL,
                 education TEXT NOT NULL,
                 location TEXT NOT NULL,
@@ -72,6 +91,40 @@ def initialize_database(db_path: str | Path | None = None) -> None:
                 migration_name TEXT PRIMARY KEY,
                 completed_at TEXT NOT NULL
             )
+            """
+        )
+        # Additive owner-scoping migration. Existing installations keep their
+        # rows under the "local" owner; new signed-in owners are isolated.
+        _ensure_column(
+            connection,
+            "job_seekers",
+            "owner_id",
+            "TEXT NOT NULL DEFAULT 'local'",
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_job_seekers_owner_created
+            ON job_seekers(owner_id, created_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cv_drafts (
+                profile_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL DEFAULT 'local',
+                draft_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (profile_id)
+                    REFERENCES job_seekers(profile_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_cv_drafts_owner_updated
+            ON cv_drafts(owner_id, updated_at DESC)
             """
         )
         connection.execute(
@@ -247,6 +300,7 @@ def initialize_database(db_path: str | Path | None = None) -> None:
             """
             CREATE TABLE IF NOT EXISTS mentor_applications (
                 application_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL DEFAULT 'local',
                 applicant_profile_id TEXT,
                 full_name TEXT NOT NULL,
                 email TEXT NOT NULL,
@@ -270,6 +324,18 @@ def initialize_database(db_path: str | Path | None = None) -> None:
                     REFERENCES job_seekers(profile_id)
                     ON DELETE SET NULL
             )
+            """
+        )
+        _ensure_column(
+            connection,
+            "mentor_applications",
+            "owner_id",
+            "TEXT NOT NULL DEFAULT 'local'",
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mentor_applications_owner_created
+            ON mentor_applications(owner_id, created_at DESC)
             """
         )
         connection.execute(
@@ -576,6 +642,7 @@ def migrate_json_profiles(
                     """
                     INSERT OR IGNORE INTO job_seekers (
                         profile_id,
+                        owner_id,
                         name,
                         education,
                         location,
@@ -585,10 +652,11 @@ def migrate_json_profiles(
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(profile_id),
+                        "local",
                         str(profile.get("name", "Not provided")),
                         str(profile.get("education", "Not provided")),
                         str(profile.get("location", "Not provided")),

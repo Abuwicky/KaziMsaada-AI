@@ -300,7 +300,7 @@ class CvTests(unittest.TestCase):
                 ):
                     self.assertTrue(meta.get(field), field)
                 self.assertIn(meta["layout"], {"single", "sidebar"})
-                self.assertIn(meta["ats"], {"Best", "Good", "Use with care"})
+                self.assertIn(meta["ats"], {"Single column", "Two column", "Plain text", "Colour header"})
                 self.assertRegex(meta["accent"], r"^#[0-9A-Fa-f]{6}$")
                 self.assertRegex(meta["muted"], r"^#[0-9A-Fa-f]{6}$")
                 html = build_cv_html(self.profile, SAMPLE_CV, template)
@@ -316,7 +316,7 @@ class CvTests(unittest.TestCase):
 
             self.assertTrue(result["txt_path"].exists())
             self.assertTrue(result["pdf_path"].exists())
-            self.assertIn("_graduate_", result["filename"])
+            self.assertIn("Test_Applicant_ICT_Support_Officer_CV", result["filename"])
             self.assertEqual(result["txt_path"].read_text(encoding="utf-8"), result["content"])
 
             records = list_saved_cvs(cv_dir)

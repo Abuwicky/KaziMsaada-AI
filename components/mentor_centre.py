@@ -1093,7 +1093,7 @@ def _render_admin_review() -> None:
             st.session_state[NEW_CODES_KEY] = codes
             st.rerun()
 
-    pending = list_mentor_applications("pending")
+    pending = list_mentor_applications("pending", include_all=True)
     if not pending:
         st.info("No pending mentor applications.")
     for application in pending:
@@ -1167,7 +1167,7 @@ def _render_admin_review() -> None:
 
     reviewed = [
         application
-        for application in list_mentor_applications()
+        for application in list_mentor_applications(include_all=True)
         if application.get("status") != "pending"
     ]
     if reviewed:

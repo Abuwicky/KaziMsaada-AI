@@ -15,6 +15,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from .database import get_database_connection
+from .workspace import get_current_owner_id, normalize_owner_id
 from .mentor_access import generate_access_code, hash_access_code, verify_access_code
 from .mentors import (
     APPLICATION_APPROVED,
@@ -172,12 +173,17 @@ def _feedback_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _require_application(
-    connection: sqlite3.Connection, application_id: str
+    connection: sqlite3.Connection,
+    application_id: str,
+    *,
+    include_all: bool = False,
 ) -> sqlite3.Row:
-    row = connection.execute(
-        "SELECT * FROM mentor_applications WHERE application_id = ?",
-        (application_id,),
-    ).fetchone()
+    query = "SELECT * FROM mentor_applications WHERE application_id = ?"
+    parameters: list[Any] = [application_id]
+    if not include_all:
+        query += " AND owner_id = ?"
+        parameters.append(normalize_owner_id(get_current_owner_id()))
+    row = connection.execute(query, parameters).fetchone()
     if row is None:
         raise MentorNotFoundError("That mentor application could not be found.")
     return row
@@ -202,8 +208,8 @@ def _require_mentor(
 
 def _require_profile(connection: sqlite3.Connection, profile_id: str) -> sqlite3.Row:
     row = connection.execute(
-        "SELECT * FROM job_seekers WHERE profile_id = ?",
-        (profile_id,),
+        "SELECT * FROM job_seekers WHERE profile_id = ? AND owner_id = ?",
+        (profile_id, normalize_owner_id(get_current_owner_id())),
     ).fetchone()
     if row is None:
         raise MentorValidationError("The active profile could not be found.")
@@ -230,8 +236,8 @@ def _require_booking(
     query = BOOKING_SELECT + " WHERE b.booking_id = ?"
     parameters: list[Any] = [booking_id]
     if profile_id is not None:
-        query += " AND b.profile_id = ?"
-        parameters.append(profile_id)
+        query += " AND b.profile_id = ? AND p.owner_id = ?"
+        parameters.extend([profile_id, normalize_owner_id(get_current_owner_id())])
     if mentor_id is not None:
         query += " AND b.mentor_id = ?"
         parameters.append(mentor_id)
@@ -311,6 +317,7 @@ def create_mentor_application(
 ) -> dict[str, Any]:
     cleaned = validate_application(data)
     profile_id = str(applicant_profile_id or "").strip() or None
+    owner = normalize_owner_id(get_current_owner_id())
     now = now_utc_iso()
     application_id = str(uuid4())
 
@@ -322,6 +329,7 @@ def create_mentor_application(
                 """
                 INSERT INTO mentor_applications (
                     application_id,
+                    owner_id,
                     applicant_profile_id,
                     full_name,
                     email,
@@ -341,10 +349,11 @@ def create_mentor_application(
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     application_id,
+                    owner,
                     profile_id,
                     cleaned["full_name"],
                     cleaned["email"],
@@ -379,29 +388,40 @@ def create_mentor_application(
 def get_mentor_application(
     application_id: str,
     db_path: str | Path | None = None,
+    *,
+    include_all: bool = False,
 ) -> dict[str, Any] | None:
     with get_database_connection(db_path) as connection:
-        row = connection.execute(
-            "SELECT * FROM mentor_applications WHERE application_id = ?",
-            (application_id,),
-        ).fetchone()
+        row = _require_application(
+            connection,
+            application_id,
+            include_all=include_all,
+        )
     return _application_from_row(row) if row else None
 
 
 def list_mentor_applications(
     status: str | None = None,
     db_path: str | Path | None = None,
+    *,
+    include_all: bool = False,
 ) -> list[dict[str, Any]]:
     if status is not None and status not in APPLICATION_STATUSES:
         raise MentorValidationError("Choose a valid application status.")
-    query = "SELECT * FROM mentor_applications"
-    parameters: tuple[Any, ...] = ()
+    conditions: list[str] = []
+    parameters: list[Any] = []
     if status:
-        query += " WHERE status = ?"
-        parameters = (status,)
+        conditions.append("status = ?")
+        parameters.append(status)
+    if not include_all:
+        conditions.append("owner_id = ?")
+        parameters.append(normalize_owner_id(get_current_owner_id()))
+    query = "SELECT * FROM mentor_applications"
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY created_at DESC"
     with get_database_connection(db_path) as connection:
-        rows = connection.execute(query, parameters).fetchall()
+        rows = connection.execute(query, tuple(parameters)).fetchall()
     return [_application_from_row(row) for row in rows]
 
 
@@ -410,15 +430,16 @@ def list_applications_for_profile(
     db_path: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     profile_id = _clean_id(profile_id, "Profile")
+    owner = normalize_owner_id(get_current_owner_id())
     with get_database_connection(db_path) as connection:
         rows = connection.execute(
             """
             SELECT *
             FROM mentor_applications
-            WHERE applicant_profile_id = ?
+            WHERE applicant_profile_id = ? AND owner_id = ?
             ORDER BY created_at DESC
             """,
-            (profile_id,),
+            (profile_id, owner),
         ).fetchall()
     return [_application_from_row(row) for row in rows]
 
@@ -442,7 +463,11 @@ def review_mentor_application(
     now = now_utc_iso()
 
     with get_database_connection(db_path) as connection:
-        application = _require_application(connection, application_id)
+        application = _require_application(
+            connection,
+            application_id,
+            include_all=True,
+        )
         if application["status"] != APPLICATION_PENDING:
             raise MentorConflictError("That application has already been reviewed.")
 
@@ -456,7 +481,11 @@ def review_mentor_application(
                 (APPLICATION_REJECTED, note, now, now, application_id),
             )
             return {
-                "application": get_mentor_application(application_id, db_path=db_path),
+                "application": get_mentor_application(
+                    application_id,
+                    db_path=db_path,
+                    include_all=True,
+                ),
                 "mentor": None,
                 "access_code": None,
             }
@@ -525,7 +554,11 @@ def review_mentor_application(
         )
 
     return {
-        "application": get_mentor_application(application_id, db_path=db_path),
+        "application": get_mentor_application(
+            application_id,
+            db_path=db_path,
+            include_all=True,
+        ),
         "mentor": get_mentor_workspace(mentor_id, db_path=db_path),
         "access_code": raw_code,
     }
@@ -1066,8 +1099,8 @@ def list_bookings_for_profile(
     with get_database_connection(db_path) as connection:
         rows = connection.execute(
             BOOKING_SELECT
-            + " WHERE b.profile_id = ? ORDER BY b.created_at DESC",
-            (profile_id,),
+            + " WHERE b.profile_id = ? AND p.owner_id = ? ORDER BY b.created_at DESC",
+            (profile_id, normalize_owner_id(get_current_owner_id())),
         ).fetchall()
     return [_booking_from_row(row) for row in rows]
 
@@ -1374,8 +1407,13 @@ def get_feedback(
             SELECT f.*
             FROM mentor_feedback f
             JOIN mentor_bookings b ON b.booking_id = f.booking_id
-            WHERE f.booking_id = ? AND b.profile_id = ?
+            JOIN job_seekers p ON p.profile_id = b.profile_id
+            WHERE f.booking_id = ? AND b.profile_id = ? AND p.owner_id = ?
             """,
-            (booking_id, profile_id),
+            (
+                booking_id,
+                profile_id,
+                normalize_owner_id(get_current_owner_id()),
+            ),
         ).fetchone()
     return _feedback_from_row(row) if row else None

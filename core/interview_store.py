@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from .database import get_database_connection
+from .workspace import get_current_owner_id, normalize_owner_id
 from .interview import (
     CATEGORY_LABELS,
     CATEGORY_LOOKUP,
@@ -135,9 +136,10 @@ def _clean_text(value: Any, field_name: str, maximum: int) -> str:
 
 
 def _validate_profile(connection: sqlite3.Connection, profile_id: str) -> None:
+    owner = normalize_owner_id(get_current_owner_id())
     row = connection.execute(
-        "SELECT 1 FROM job_seekers WHERE profile_id = ?",
-        (profile_id,),
+        "SELECT 1 FROM job_seekers WHERE profile_id = ? AND owner_id = ?",
+        (profile_id, owner),
     ).fetchone()
     if row is None:
         raise InterviewValidationError("The active profile could not be found.")
@@ -148,13 +150,15 @@ def _get_owned_session_row(
     session_id: str,
     profile_id: str,
 ) -> sqlite3.Row:
+    owner = normalize_owner_id(get_current_owner_id())
     row = connection.execute(
         """
-        SELECT *
-        FROM interview_sessions
-        WHERE id = ? AND profile_id = ?
+        SELECT s.*
+        FROM interview_sessions s
+        JOIN job_seekers p ON p.profile_id = s.profile_id
+        WHERE s.id = ? AND s.profile_id = ? AND p.owner_id = ?
         """,
-        (session_id, profile_id),
+        (session_id, profile_id, owner),
     ).fetchone()
     if row is None:
         raise InterviewSessionNotFound("That practice session could not be found.")
@@ -253,8 +257,9 @@ def get_session(
     profile_id: str,
     db_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    """Return one session only when it belongs to the profile."""
+    """Return one session only when it belongs to the profile and owner."""
 
+    owner = normalize_owner_id(get_current_owner_id())
     with get_database_connection(db_path) as connection:
         row = connection.execute(
             """
@@ -266,9 +271,10 @@ def get_session(
                     WHERE r.session_id = s.id
                 ) AS answered_count
             FROM interview_sessions s
-            WHERE s.id = ? AND s.profile_id = ?
+            JOIN job_seekers p ON p.profile_id = s.profile_id
+            WHERE s.id = ? AND s.profile_id = ? AND p.owner_id = ?
             """,
-            (session_id, profile_id),
+            (session_id, profile_id, owner),
         ).fetchone()
 
     return _session_from_row(row) if row else None
@@ -293,9 +299,10 @@ def list_sessions(
                 WHERE r.session_id = s.id
             ) AS answered_count
         FROM interview_sessions s
-        WHERE s.profile_id = ?
+        JOIN job_seekers p ON p.profile_id = s.profile_id
+        WHERE s.profile_id = ? AND p.owner_id = ?
     """
-    params: list[Any] = [profile_id]
+    params: list[Any] = [profile_id, normalize_owner_id(get_current_owner_id())]
     if status is not None:
         query += " AND s.status = ?"
         params.append(status)

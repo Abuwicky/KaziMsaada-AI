@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .database import get_database_connection
+from .workspace import get_current_owner_id, normalize_owner_id
 
 PROFILE_FIELDS = (
     "name",
@@ -129,16 +130,23 @@ def _clean_profile(data: dict) -> dict:
     return cleaned
 
 
-def load_profiles(db_path: str | Path | None = None) -> list[dict]:
-    """Return every saved profile, newest first."""
+def load_profiles(
+    db_path: str | Path | None = None,
+    *,
+    owner_id: str | None = None,
+) -> list[dict]:
+    """Return this workspace owner's saved profiles, newest first."""
 
+    owner = normalize_owner_id(owner_id or get_current_owner_id())
     with get_database_connection(db_path) as connection:
         rows = connection.execute(
             """
             SELECT *
             FROM job_seekers
+            WHERE owner_id = ?
             ORDER BY created_at DESC
-            """
+            """,
+            (owner,),
         ).fetchall()
 
     return [_row_to_profile(row) for row in rows]
@@ -147,17 +155,20 @@ def load_profiles(db_path: str | Path | None = None) -> list[dict]:
 def get_profile(
     profile_id: str,
     db_path: str | Path | None = None,
+    *,
+    owner_id: str | None = None,
 ) -> dict | None:
-    """Return one profile by its unique ID, or ``None``."""
+    """Return one profile owned by this workspace, or ``None``."""
 
+    owner = normalize_owner_id(owner_id or get_current_owner_id())
     with get_database_connection(db_path) as connection:
         row = connection.execute(
             """
             SELECT *
             FROM job_seekers
-            WHERE profile_id = ?
+            WHERE profile_id = ? AND owner_id = ?
             """,
-            (profile_id,),
+            (profile_id, owner),
         ).fetchone()
 
     return _row_to_profile(row) if row else None
@@ -179,9 +190,11 @@ def create_profile(
 
     cleaned = _clean_profile(data)
     now = datetime.now().astimezone().isoformat(timespec="seconds")
+    owner = normalize_owner_id(get_current_owner_id())
 
     profile = {
         "profile_id": str(uuid4()),
+        "owner_id": owner,
         "created_at": now,
         "updated_at": None,
         **cleaned,
@@ -192,6 +205,7 @@ def create_profile(
             """
             INSERT INTO job_seekers (
                 profile_id,
+                owner_id,
                 name,
                 education,
                 location,
@@ -201,10 +215,11 @@ def create_profile(
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 profile["profile_id"],
+                profile["owner_id"],
                 profile["name"],
                 profile["education"],
                 profile["location"],
@@ -228,11 +243,14 @@ def save_profile_record(
     The record is verified inside the same transaction before returning.
     """
 
+    owner = normalize_owner_id(get_current_owner_id())
+
     with get_database_connection(db_path) as connection:
         connection.execute(
             """
             INSERT INTO job_seekers (
                 profile_id,
+                owner_id,
                 name,
                 education,
                 location,
@@ -242,10 +260,11 @@ def save_profile_record(
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_seeker["profile_id"],
+                owner,
                 job_seeker["name"],
                 job_seeker["education"],
                 job_seeker["location"],
@@ -261,9 +280,9 @@ def save_profile_record(
             """
             SELECT *
             FROM job_seekers
-            WHERE profile_id = ?
+            WHERE profile_id = ? AND owner_id = ?
             """,
-            (job_seeker["profile_id"],),
+            (job_seeker["profile_id"], owner),
         ).fetchone()
 
     if saved is None:
@@ -281,6 +300,7 @@ def update_profile_record(
     updated_at = profile.get("updated_at") or datetime.now().astimezone().isoformat(
         timespec="seconds"
     )
+    owner = normalize_owner_id(get_current_owner_id())
 
     with get_database_connection(db_path) as connection:
         cursor = connection.execute(
@@ -294,7 +314,7 @@ def update_profile_record(
                 career_interest = ?,
                 skills = ?,
                 updated_at = ?
-            WHERE profile_id = ?
+            WHERE profile_id = ? AND owner_id = ?
             """,
             (
                 profile["name"],
@@ -305,6 +325,7 @@ def update_profile_record(
                 json.dumps(normalize_skills(profile.get("skills", [])), ensure_ascii=False),
                 updated_at,
                 profile["profile_id"],
+                owner,
             ),
         )
 
@@ -315,15 +336,16 @@ def delete_profile_record(
     profile_id: str,
     db_path: str | Path | None = None,
 ) -> bool:
-    """Delete one profile by its unique ID."""
+    """Delete one profile owned by this workspace."""
 
+    owner = normalize_owner_id(get_current_owner_id())
     with get_database_connection(db_path) as connection:
         cursor = connection.execute(
             """
             DELETE FROM job_seekers
-            WHERE profile_id = ?
+            WHERE profile_id = ? AND owner_id = ?
             """,
-            (profile_id,),
+            (profile_id, owner),
         )
 
     return cursor.rowcount == 1

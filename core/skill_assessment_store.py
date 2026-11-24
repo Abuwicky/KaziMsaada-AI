@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from .database import get_database_connection
+from .workspace import get_current_owner_id, normalize_owner_id
 from .skill_assessment import (
     KNOWLEDGE,
     PRACTICAL,
@@ -103,8 +104,8 @@ def _validate_profile(
     profile_id: str,
 ) -> None:
     row = connection.execute(
-        "SELECT 1 FROM job_seekers WHERE profile_id = ?",
-        (profile_id,),
+        "SELECT 1 FROM job_seekers WHERE profile_id = ? AND owner_id = ?",
+        (profile_id, normalize_owner_id(get_current_owner_id())),
     ).fetchone()
     if row is None:
         raise SkillAssessmentValidationError(
@@ -119,11 +120,12 @@ def _get_owned_assessment_row(
 ) -> sqlite3.Row:
     row = connection.execute(
         """
-        SELECT *
-        FROM skill_assessments
-        WHERE assessment_id = ? AND profile_id = ?
+        SELECT a.*
+        FROM skill_assessments a
+        JOIN job_seekers p ON p.profile_id = a.profile_id
+        WHERE a.assessment_id = ? AND a.profile_id = ? AND p.owner_id = ?
         """,
-        (assessment_id, profile_id),
+        (assessment_id, profile_id, normalize_owner_id(get_current_owner_id())),
     ).fetchone()
     if row is None:
         raise SkillAssessmentNotFound(
@@ -225,9 +227,14 @@ def get_assessment(
                     WHERE r.assessment_id = a.assessment_id
                 ) AS response_count
             FROM skill_assessments a
-            WHERE a.assessment_id = ? AND a.profile_id = ?
+            JOIN job_seekers p ON p.profile_id = a.profile_id
+            WHERE a.assessment_id = ? AND a.profile_id = ? AND p.owner_id = ?
             """,
-            (assessment_id, profile_id),
+            (
+                assessment_id,
+                profile_id,
+                normalize_owner_id(get_current_owner_id()),
+            ),
         ).fetchone()
 
     return _assessment_from_row(row) if row else None
@@ -257,9 +264,13 @@ def list_assessments(
                 WHERE r.assessment_id = a.assessment_id
             ) AS response_count
         FROM skill_assessments a
-        WHERE a.profile_id = ?
+        JOIN job_seekers p ON p.profile_id = a.profile_id
+        WHERE a.profile_id = ? AND p.owner_id = ?
     """
-    params: list[Any] = [profile_id]
+    params: list[Any] = [
+        profile_id,
+        normalize_owner_id(get_current_owner_id()),
+    ]
 
     if status is not None:
         query += " AND a.status = ?"

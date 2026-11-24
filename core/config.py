@@ -9,7 +9,8 @@ from pathlib import Path
 APP_NAME = "KAZIMSAADA AI"
 APP_DISPLAY_NAME = "KaziMsaada AI"
 APP_TAGLINE = "Career readiness, made practical."
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
+BUILD_STAMP = "2026-11-24 privacy-and-cv"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"

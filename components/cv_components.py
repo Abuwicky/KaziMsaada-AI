@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import html
 import io
+import json
+import sqlite3
 import uuid
+from datetime import datetime
 
 import streamlit as st
 
@@ -13,9 +16,24 @@ from core.cv import (
     TEMPLATES,
     build_cv_content,
     build_cv_html,
+    cv_file_stem,
     generate_cv_pdf,
     save_cv_bundle,
     validate_cv_contact_details,
+)
+from core.cv_drafts import (
+    CvDraftError,
+    load_cv_draft,
+    load_cv_draft_updated_at,
+    save_cv_draft,
+)
+from core.cv_export import generate_cv_docx
+from core.cv_insights import (
+    analyse_job_ad,
+    bullet_feedback,
+    cover_letter,
+    cv_strength,
+    interview_questions,
 )
 from core.profiles import normalize_skills
 
@@ -140,7 +158,59 @@ def _unique_skills(values: list[str]) -> list[str]:
 
 def _draft(profile_id: str) -> dict:
     drafts = st.session_state.setdefault("cv_drafts", {})
+    if profile_id not in drafts:
+        try:
+            drafts[profile_id] = load_cv_draft(profile_id)
+        except (CvDraftError, sqlite3.Error):
+            drafts[profile_id] = {}
+        try:
+            saved_at = load_cv_draft_updated_at(profile_id)
+        except (CvDraftError, sqlite3.Error):
+            saved_at = None
+        st.session_state.setdefault("cv_draft_saved_at", {})[profile_id] = saved_at
     return drafts.setdefault(profile_id, {})
+
+
+def _draft_signature(draft: dict) -> str:
+    payload = {
+        key: value
+        for key, value in draft.items()
+        if not str(key).startswith("_")
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _autosave_draft(profile_id: str, draft: dict) -> None:
+    """Persist a draft only when its content has changed since the last save."""
+
+    signature = _draft_signature(draft)
+    signatures = st.session_state.setdefault("cv_draft_signatures", {})
+    if signatures.get(profile_id) == signature:
+        return
+
+    try:
+        save_cv_draft(profile_id, draft)
+    except (CvDraftError, sqlite3.Error) as error:
+        st.session_state.setdefault("cv_draft_autosave_errors", {})[profile_id] = str(error)
+        return
+
+    signatures[profile_id] = signature
+    st.session_state.setdefault("cv_draft_saved_at", {})[profile_id] = (
+        datetime.now().astimezone().isoformat(timespec="seconds")
+    )
+    st.session_state.setdefault("cv_draft_autosave_errors", {}).pop(profile_id, None)
+
+
+def _saved_at_label(value: str | None) -> str:
+    if not value:
+        return "Autosave is on. Changes are saved to your workspace."
+    try:
+        saved = datetime.fromisoformat(str(value))
+    except ValueError:
+        return "Autosave is on. Changes are saved to your workspace."
+    return f"Last autosaved {saved.strftime('%d %b %Y, %H:%M')}"
 
 
 def _prepare_widget_state(key: str, value) -> str:
@@ -288,8 +358,8 @@ def _render_experience_cards(profile_id: str, draft: dict) -> list[dict]:
         unsafe_allow_html=True,
     )
     st.caption(
-        "Add employment, internships, industrial attachments, volunteering, "
-        "freelance assignments or other relevant practical experience."
+        "Add employment, internships, industrial attachments, NYS service, "
+        "volunteering, freelance assignments or other relevant practical experience."
     )
 
     records = draft.setdefault("experience", [])
@@ -506,7 +576,7 @@ def _render_skills_picker(profile_id: str, profile: dict, draft: dict) -> list[s
     )
     education_text = st.text_area(
         "Additional education or training",
-        placeholder="One per line, e.g.\nKenya Certificate of Secondary Education — 2021",
+        placeholder="One per line, e.g.\nKenya Certificate of Secondary Education (KCSE) — 2021\nNITA craft certificate — 2023",
         height=90,
         key=education_key,
     )
@@ -671,34 +741,321 @@ def _render_skills_picker(profile_id: str, profile: dict, draft: dict) -> list[s
     return selected_skills
 
 
-def _render_preview(profile: dict, cv_data: dict, template: str) -> None:
+def _safe_accent(value, fallback: str) -> str:
+    text = str(value or "").strip()
+    if (
+        len(text) == 7
+        and text.startswith("#")
+        and all(character in "0123456789abcdefABCDEF" for character in text[1:])
+    ):
+        return text
+    return fallback
+
+
+def _render_template_gallery(profile_id: str, draft: dict) -> tuple[str, str]:
+    """Show a visual template gallery and return the chosen template and accent."""
+
+    stored = (
+        draft.get("template")
+        or st.session_state.get(f"cv_template_{profile_id}")
+        or st.session_state.get("cv_template")
+        or "classic"
+    )
+    if stored not in TEMPLATES:
+        stored = "classic"
+
+    st.caption(
+        "Choose a starting design. You can change it at any time without losing "
+        "the details you have entered."
+    )
+    templates = list(TEMPLATES.items())
+    for start in range(0, len(templates), 3):
+        row = st.columns(3)
+        for column, (key, meta) in zip(row, templates[start : start + 3]):
+            with column:
+                selected = key == stored
+                st.markdown(
+                    f"""
+                    <div class="km-template-card{' km-template-card-selected' if selected else ''}"
+                         style="--template-accent:{meta['accent']}">
+                      <div class="km-template-thumb">
+                        <span class="km-thumb-bar"></span>
+                        <span class="km-thumb-line km-thumb-line-wide"></span>
+                        <span class="km-thumb-line"></span>
+                        <span class="km-thumb-line km-thumb-line-short"></span>
+                        <span class="km-thumb-rule"></span>
+                        <span class="km-thumb-line km-thumb-line-wide"></span>
+                        <span class="km-thumb-line"></span>
+                      </div>
+                      <div class="km-template-card-body">
+                        <strong>{html.escape(meta['name'])}</strong>
+                        <span>{html.escape(meta['description'])}</span>
+                        <em>Best for: {html.escape(meta.get('best_for', 'General use'))}</em>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button(
+                    "Selected" if selected else "Use this design",
+                    key=f"cv_template_choice_{profile_id}_{key}",
+                    disabled=selected,
+                    width="stretch",
+                ):
+                    draft["template"] = key
+                    draft["accent"] = meta["accent"]
+                    st.session_state[f"cv_template_{profile_id}"] = key
+                    st.session_state[f"cv_accent_{profile_id}"] = meta["accent"]
+                    st.rerun()
+
+    template = stored
+    accent_key = f"cv_accent_{profile_id}"
+    if accent_key not in st.session_state:
+        st.session_state[accent_key] = _safe_accent(
+            draft.get("accent"),
+            TEMPLATES[template]["accent"],
+        )
+    accent_col, reset_col = st.columns([3, 1])
+    with accent_col:
+        accent = st.color_picker(
+            "Accent colour",
+            key=accent_key,
+            help="Use your own colour while keeping the selected layout and structure.",
+        )
+    with reset_col:
+        st.markdown("<div style='height: 1.65rem'></div>", unsafe_allow_html=True)
+        if st.button(
+            "Reset",
+            key=f"cv_accent_reset_{profile_id}",
+            width="stretch",
+            help="Reset to the template's original colour",
+        ):
+            st.session_state[accent_key] = TEMPLATES[template]["accent"]
+            draft["accent"] = TEMPLATES[template]["accent"]
+            st.rerun()
+
+    draft["template"] = template
+    draft["accent"] = accent
+    st.session_state[f"cv_template_{profile_id}"] = template
+    return template, accent
+
+
+def _render_preview(
+    profile: dict,
+    cv_data: dict,
+    template: str,
+    accent: str | None = None,
+) -> None:
     st.markdown(
         f"""
         <div class="km-preview-head">
           <div>
-            <strong>Live preview</strong>
+            <strong>CV preview</strong>
             <span>{html.escape(TEMPLATES[template]["name"])}</span>
           </div>
-          <span class="km-badge km-badge-available">Updates as you edit</span>
+          <span class="km-badge km-badge-available">Generated from your entries</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
     st.iframe(
-        build_cv_html(profile, cv_data, template),
+        build_cv_html(profile, cv_data, template, accent=accent),
         width="stretch",
         height=940,
-        alt="Live CV preview",
+        alt="CV preview",
     )
     st.caption(
-        "The preview and the downloadable PDF are generated from the same CV data."
+        "This preview and the downloadable PDF use the same CV data and the "
+        "same template settings."
     )
 
 
-def _pdf_bytes(profile: dict, cv_data: dict, template: str) -> bytes:
+def _pdf_bytes(
+    profile: dict,
+    cv_data: dict,
+    template: str,
+    accent: str | None = None,
+) -> bytes:
     buffer = io.BytesIO()
-    generate_cv_pdf(build_cv_content(profile, cv_data), buffer, template=template)
+    generate_cv_pdf(
+        build_cv_content(profile, cv_data),
+        buffer,
+        template=template,
+        accent=accent,
+    )
     return buffer.getvalue()
+
+
+def _known_skills() -> list[str]:
+    return [skill for skills in SKILL_LIBRARY.values() for skill in skills]
+
+
+def _render_strength(profile: dict, cv_data: dict) -> None:
+    result = cv_strength(profile, cv_data)
+    with st.container(border=True):
+        st.markdown("**CV strength score**")
+        st.progress(result["score"] / 100)
+        st.caption(f"{result['score']}/100 · {result['band']}")
+        if result["fixes"]:
+            st.markdown("**Next best fixes**")
+            for item in result["fixes"]:
+                st.markdown(f"- **{item['label']}:** {item['fix']}")
+        else:
+            st.caption("All checks are complete. Review the wording before sending.")
+        with st.expander("See all checks"):
+            for item in result["checks"]:
+                marker = "✓" if item["earned"] >= item["points"] else "•"
+                st.caption(
+                    f"{marker} {item['label']} ({item['earned']}/{item['points']})"
+                )
+        st.caption(result["note"])
+
+
+def _render_job_match(profile: dict, cv_data: dict, draft: dict, profile_id: str) -> None:
+    st.markdown(
+        '<div class="km-panel-title">Job-ad match</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Paste a job advert to see which skills and keywords it mentions. This "
+        "never changes your CV until you confirm a skill yourself."
+    )
+    job_ad_key = _prepare_widget_state(
+        f"cv_job_ad_{profile_id}", draft.get("job_ad", "")
+    )
+    job_ad = st.text_area(
+        "Job advert text",
+        key=job_ad_key,
+        height=150,
+        placeholder="Paste the duties and requirements from the advert here.",
+    )
+    draft["job_ad"] = job_ad
+    _autosave_draft(profile_id, draft)
+
+    result = analyse_job_ad(
+        job_ad,
+        profile,
+        cv_data,
+        known_skills=_known_skills(),
+    )
+    if not result.get("available"):
+        st.info("Paste a job advert to start the comparison.")
+        return
+
+    st.progress(result["score"] / 100)
+    st.caption(f"{result['score']}% wording coverage · {result['label']}")
+    st.caption(result["note"])
+
+    if result["matched"]:
+        st.markdown("**Already reflected in this CV**")
+        st.write(" · ".join(result["matched"]))
+
+    if result["missing"]:
+        st.markdown("**Mentioned in the advert but not in this CV**")
+        st.write(" · ".join(result["missing"]))
+        confirm_key = f"cv_confirm_skills_{profile_id}"
+        selected = st.multiselect(
+            "Select only the skills you can genuinely confirm",
+            options=result["missing"],
+            key=confirm_key,
+            placeholder="Choose skills to add",
+        )
+        if st.button(
+            "Add confirmed skills to this CV",
+            key=f"cv_add_confirmed_{profile_id}",
+            disabled=not selected,
+            width="stretch",
+        ):
+            current = _unique_skills(
+                _skill_values(draft.get("skills"))
+                + _skill_values(draft.get("custom_skills"))
+                + list(selected)
+            )
+            draft["skills"] = current
+            draft["custom_skills"] = _unique_skills(
+                _skill_values(draft.get("custom_skills")) + list(selected)
+            )
+            st.session_state.pop(confirm_key, None)
+            _autosave_draft(profile_id, draft)
+            st.rerun()
+        st.caption(
+            "Do not add a skill you cannot explain in an interview. You can remove "
+            "confirmed custom skills in the skills section."
+        )
+
+
+def _render_bullet_coach(experience: list[dict]) -> None:
+    bullets = [
+        item
+        for entry in experience
+        for item in entry.get("responsibilities", [])
+        if str(item).strip()
+    ]
+    if not bullets:
+        return
+    with st.expander("Improve your experience bullets", expanded=False):
+        st.caption(
+            "These are writing suggestions based only on your own words. Add a "
+            "number or result only when you know it is accurate."
+        )
+        for bullet in bullets[:8]:
+            feedback = bullet_feedback(bullet)
+            st.markdown(f"**Before:** {html.escape(feedback['original'])}")
+            if feedback["issues"]:
+                for issue in feedback["issues"]:
+                    st.caption(f"- {issue}")
+                if feedback["suggestion"] != feedback["original"]:
+                    st.markdown(
+                        f"**Draft opener to review:** "
+                        f"{html.escape(feedback['suggestion'])}"
+                    )
+            else:
+                st.caption("This bullet already has a clear action and detail.")
+
+
+def _render_cover_letter(profile: dict, cv_data: dict, draft: dict, profile_id: str) -> None:
+    with st.expander("Cover letter draft", expanded=False):
+        st.caption(
+            "This draft uses only the facts already in your CV. Read it carefully, "
+            "add the employer's name and any specific details, then edit it in your "
+            "own voice before sending."
+        )
+        key = f"cv_cover_letter_text_{profile_id}"
+        if st.button(
+            "Generate or refresh cover letter",
+            key=f"cv_cover_generate_{profile_id}",
+            width="stretch",
+        ):
+            st.session_state[key] = cover_letter(profile, cv_data, draft.get("job_ad", ""))
+        if key not in st.session_state:
+            st.session_state[key] = cover_letter(profile, cv_data, draft.get("job_ad", ""))
+        text = st.text_area(
+            "Editable cover letter",
+            key=key,
+            height=330,
+        )
+        st.download_button(
+            "Download cover letter",
+            data=text.encode("utf-8"),
+            file_name=f"{cv_file_stem(profile, cv_data).replace('_CV', '_Cover_Letter')}.txt",
+            mime="text/plain",
+            key=f"cv_cover_download_{profile_id}",
+        )
+
+
+def _render_interview_questions(profile: dict, cv_data: dict) -> None:
+    questions = interview_questions(profile, cv_data)
+    with st.expander("Interview questions based on this CV", expanded=False):
+        st.caption(
+            "These are practice prompts generated from your CV fields, not "
+            "questions supplied by an employer."
+        )
+        for number, question in enumerate(questions, start=1):
+            st.markdown(f"{number}. {question}")
+        st.caption(
+            "Open Interview Practice in the sidebar to record an answer and get "
+            "structured feedback."
+        )
 
 
 def render_cv_builder(profiles: list[dict]) -> None:
@@ -749,46 +1106,26 @@ def render_cv_builder(profiles: list[dict]) -> None:
         '<div class="km-cv-split-marker" aria-hidden="true">.</div>',
         unsafe_allow_html=True,
     )
-    left, right = st.columns([1.08, 1], gap="large")
+    st.markdown(
+        '<div class="km-panel-title">1. Choose a template</div>',
+        unsafe_allow_html=True,
+    )
+    template, accent = _render_template_gallery(pid, draft)
+    mobile_tabs = st.toggle(
+        "Mobile Edit/Preview tabs",
+        value=False,
+        key=f"cv_mobile_tabs_{pid}",
+        help=(
+            "Use separate Edit and Preview tabs on a narrow screen instead of "
+            "scrolling past the full preview."
+        ),
+    )
+    if mobile_tabs:
+        left, right = st.tabs(["Edit CV", "Preview"])
+    else:
+        left, right = st.columns([1.08, 1], gap="large")
 
     with left:
-        st.markdown(
-            '<div class="km-panel-title">1. Choose a template</div>',
-            unsafe_allow_html=True,
-        )
-        template_keys = list(TEMPLATES)
-        stored_template = draft.get(
-            "template", st.session_state.get("cv_template", "classic")
-        )
-        if stored_template not in TEMPLATES:
-            stored_template = "classic"
-
-        template = st.selectbox(
-            "CV template",
-            template_keys,
-            index=template_keys.index(stored_template),
-            format_func=lambda key: TEMPLATES[key]["name"],
-            key=f"cv_template_picker_{pid}",
-            label_visibility="collapsed",
-        )
-        meta = TEMPLATES[template]
-        st.markdown(
-            f"""
-            <div class="km-template-row">
-              <span class="km-template-swatch" style="background:{meta['accent']}"></span>
-              <div>
-                <strong>{html.escape(meta['name'])}</strong>
-                <span>{html.escape(meta['description'])}</span>
-                <span>Best for: {html.escape(meta.get('best_for', 'General use'))} ·
-                ATS: {html.escape(meta.get('ats', 'Best'))}</span>
-              </div>
-              <code>{html.escape(template)}</code>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.session_state["cv_template"] = template
-
         st.markdown(
             '<div class="km-panel-title">2. Target and contact details</div>',
             unsafe_allow_html=True,
@@ -801,6 +1138,7 @@ def render_cv_builder(profiles: list[dict]) -> None:
             placeholder="e.g. ICT Support Officer",
             key=target_key,
         )
+        target_error_slot = st.empty()
 
         contact_left, contact_right = st.columns(2)
         with contact_left:
@@ -812,6 +1150,7 @@ def render_cv_builder(profiles: list[dict]) -> None:
                 placeholder="e.g. 0712 345 678",
                 key=phone_key,
             )
+            phone_error_slot = st.empty()
         with contact_right:
             email_key = _prepare_widget_state(
                 f"cv_email_{pid}", draft.get("email", "")
@@ -821,6 +1160,15 @@ def render_cv_builder(profiles: list[dict]) -> None:
                 placeholder="you@example.com",
                 key=email_key,
             )
+            email_error_slot = st.empty()
+
+        contact_errors = validate_cv_contact_details(target_role, email, phone)
+        if str(target_role or "").strip() and "target_role" in contact_errors:
+            target_error_slot.caption(f":red[{contact_errors['target_role']}]")
+        if str(phone or "").strip() and "phone" in contact_errors:
+            phone_error_slot.caption(f":red[{contact_errors['phone']}]")
+        if str(email or "").strip() and "email" in contact_errors:
+            email_error_slot.caption(f":red[{contact_errors['email']}]")
 
         summary_key = _prepare_widget_state(
             f"cv_summary_{pid}", draft.get("summary", "")
@@ -836,7 +1184,17 @@ def render_cv_builder(profiles: list[dict]) -> None:
         )
 
         skills = _render_skills_picker(pid, profile, draft)
+        with st.expander("Kenyan application notes", expanded=False):
+            st.markdown(
+                "- Use qualification names as they appear on your certificates "
+                "(for example KCSE, KNEC, NITA, TVET or a university degree).\n"
+                "- Treat attachments, internships and NYS service as practical "
+                "experience. Name the organisation and the dates.\n"
+                "- List Kiswahili only if you can use it professionally.\n"
+                "- Ask referees for permission before sharing their details."
+            )
         experience = _render_experience_cards(pid, draft)
+        _render_bullet_coach(experience)
 
         with st.expander(
             "Projects, volunteering, certifications, languages and referees",
@@ -905,10 +1263,12 @@ def render_cv_builder(profiles: list[dict]) -> None:
             "referees": _lines(referees_text),
         }
 
-        # Preserve the draft for navigation and reruns. CV data is only persisted
-        # to the workspace when the user explicitly saves the CV.
+        # Preserve the draft for navigation and reruns. The draft is autosaved
+        # to the signed-in owner's workspace; the final PDF is only written when
+        # the user explicitly saves the CV.
         draft.update({
             "template": template,
+            "accent": accent,
             "target_role": cv_data["target_role"],
             "phone": cv_data["phone"],
             "email": cv_data["email"],
@@ -921,10 +1281,17 @@ def render_cv_builder(profiles: list[dict]) -> None:
             "referees": referees_text,
             "skills": skills,
         })
+        _autosave_draft(pid, draft)
+        saved_at = st.session_state.get("cv_draft_saved_at", {}).get(pid)
+        autosave_error = st.session_state.get("cv_draft_autosave_errors", {}).get(pid)
+        if autosave_error:
+            st.caption(
+                ":red[Autosave could not run. Your details remain on this page, "
+                "but download or save the CV before closing.]"
+            )
+        else:
+            st.caption(_saved_at_label(saved_at))
 
-        contact_errors = validate_cv_contact_details(
-            cv_data["target_role"], cv_data["email"], cv_data["phone"]
-        )
         ready = not contact_errors
 
         if contact_errors:
@@ -936,27 +1303,43 @@ def render_cv_builder(profiles: list[dict]) -> None:
 
         pdf_bytes = None
         pdf_error = None
+        docx_bytes = None
+        docx_error = None
         if ready:
             try:
-                pdf_bytes = _pdf_bytes(profile, cv_data, template)
+                pdf_bytes = _pdf_bytes(profile, cv_data, template, accent)
             except Exception as error:  # ReportLab failures should not crash the page.
                 pdf_error = error
+            try:
+                docx_bytes = generate_cv_docx(profile, cv_data, accent)
+            except Exception as error:
+                docx_error = error
 
-        safe_name = "".join(
-            ch if ch.isalnum() or ch in ("-", "_") else "_"
-            for ch in str(profile.get("name", "CV")).strip()
-        ) or "CV"
+        download_name = f"{cv_file_stem(profile, cv_data)}.pdf"
 
-        download_col, save_col = st.columns(2)
+        download_col, docx_col, save_col = st.columns(3)
         with download_col:
             st.download_button(
                 "Download PDF",
                 data=pdf_bytes or b"",
-                file_name=f"CV_{safe_name}.pdf",
+                file_name=download_name,
                 mime="application/pdf",
                 width="stretch",
                 disabled=not ready or not pdf_bytes,
                 key=f"cv_download_{pid}",
+            )
+        with docx_col:
+            st.download_button(
+                "Download DOCX",
+                data=docx_bytes or b"",
+                file_name=download_name.replace(".pdf", ".docx"),
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                width="stretch",
+                disabled=not ready or not docx_bytes,
+                key=f"cv_download_docx_{pid}",
             )
         with save_col:
             save_clicked = st.button(
@@ -973,10 +1356,17 @@ def render_cv_builder(profiles: list[dict]) -> None:
             )
             with st.expander("Technical details"):
                 st.code(f"{type(pdf_error).__name__}: {pdf_error}", language=None)
+        if docx_error is not None:
+            st.caption(":red[The editable DOCX could not be generated for this CV.]")
 
         if save_clicked:
             try:
-                saved = save_cv_bundle(profile, cv_data, template)
+                saved = save_cv_bundle(
+                    profile,
+                    cv_data,
+                    template,
+                    accent=accent,
+                )
             except OSError as error:
                 st.error(
                     "The CV files could not be saved to the local CV folder. "
@@ -996,4 +1386,8 @@ def render_cv_builder(profiles: list[dict]) -> None:
                 st.rerun()
 
     with right:
-        _render_preview(profile, cv_data, template)
+        _render_strength(profile, cv_data)
+        _render_preview(profile, cv_data, template, accent=accent)
+        _render_job_match(profile, cv_data, draft, pid)
+        _render_cover_letter(profile, cv_data, draft, pid)
+        _render_interview_questions(profile, cv_data)

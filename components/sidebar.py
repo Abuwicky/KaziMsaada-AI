@@ -6,8 +6,16 @@ import html
 
 import streamlit as st
 
+from core.auth import (
+    current_user_name,
+    is_authenticated,
+    persistence_note,
+    privacy_summary,
+    workspace_label,
+)
 from core.config import APP_DISPLAY_NAME, APP_VERSION, DATABASE_FILE
 from core.profiles import profile_completeness
+from core.workspace import current_cv_dir
 
 from .ui import NAV_ITEMS, icon, initialize_state
 
@@ -120,25 +128,34 @@ def render_sidebar(profiles: list[dict]) -> str:
             <div class="km-side-status">
               <div class="km-status-dot"></div>
               <div>
-                <strong>Local workspace</strong>
+                <strong>{workspace_label()}</strong>
                 <span>SQLite · v{html.escape(APP_VERSION)}</span>
               </div>
             </div>
             <div class="km-side-foot">
-              Profiles and CVs stay on this computer.
+              {html.escape(privacy_summary())}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
+        if is_authenticated():
+            st.caption(f"Signed in as {current_user_name()}")
+            if st.button("Sign out", key="workspace_sidebar_sign_out", width="stretch"):
+                st.logout()
+        else:
+            st.caption("Local mode")
+
         with st.expander("Workspace details", expanded=False):
             st.caption("Database")
             st.code(str(DATABASE_FILE), language=None)
+            st.caption("Current CV folder")
+            st.code(str(current_cv_dir()), language=None)
+            st.caption(persistence_note())
             st.caption(
-                "Profiles and CVs are stored locally. When AI practice features are "
-                "enabled, only the interview practice details needed for that action "
-                "are sent to the configured provider. Profile and CV data are not "
-                "sent."
+                "When AI practice features are enabled, only the interview practice "
+                "details needed for that action are sent to the configured provider. "
+                "Profile and CV documents are not sent."
             )
 
     return st.session_state["page"]

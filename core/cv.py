@@ -52,8 +52,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from .config import CV_DIR
 from .profiles import normalize_skills
+from .workspace import current_cv_dir
 
 # Small branded footer printed on every PDF page. Set to "" to hide it.
 BRAND_FOOTER = "Created with KaziMsaada AI"
@@ -109,7 +109,7 @@ _BASE_TEMPLATE = {
     "sidebar": (),               # section keys placed in the sidebar column
     "section_order": DEFAULT_SECTION_ORDER,
     "ink": "#222222",
-    "ats": "Best",               # Best | Good | Use with care (for badges in the UI)
+    "ats": "Single column",      # Neutral layout note shown in the UI
     "best_for": "",
 }
 
@@ -135,7 +135,7 @@ TEMPLATES = {
         best_for="Corporate, NGO and private-sector roles",
         accent="#087E8B", muted="#425466",
         header="left", header_rule="thick", name_pt=23,
-        heading_style="rule_accent", skills_style="chips", ats="Good",
+        heading_style="rule_accent", skills_style="chips", ats="Single column",
     ),
     "graduate": _template(
         name="Graduate and Early-Career",
@@ -148,12 +148,12 @@ TEMPLATES = {
                        "volunteering", "certifications", "languages", "referees"),
     ),
     "ats_plain": _template(
-        name="ATS Plain",
-        description="Plain single column, no colour or graphics, built for online application systems.",
-        best_for="Online portals and large employers",
+        name="Plain Text",
+        description="Plain single column with no colour or graphics; useful when a portal asks for a simple file.",
+        best_for="Simple online applications",
         accent="#1A1A1A", muted="#444444", ink="#111111",
         header="left", name_case="as_typed", name_pt=20,
-        heading_style="plain", skills_style="inline", skills_sep=", ",
+        heading_style="plain", skills_style="inline", skills_sep=", ", ats="Plain text",
         section_order=("summary", "skills", "experience", "education", "projects",
                        "certifications", "volunteering", "languages", "referees"),
     ),
@@ -164,7 +164,7 @@ TEMPLATES = {
         accent="#24566F", muted="#4A5C68",
         layout="sidebar", sidebar=("skills", "languages", "certifications"),
         header="left", name_case="as_typed", name_pt=24,
-        heading_style="rule_accent", ats="Use with care",
+        heading_style="rule_accent", ats="Two column",
         section_order=("summary", "experience", "education", "projects",
                        "volunteering", "skills", "certifications", "languages", "referees"),
     ),
@@ -193,7 +193,7 @@ TEMPLATES = {
         best_for="Career changers and people with limited formal experience",
         accent="#B4530A", muted="#6B5A4E",
         header="left", header_rule="thin", name_case="as_typed", name_pt=23,
-        heading_style="bar", skills_style="chips", ats="Good",
+        heading_style="bar", skills_style="chips", ats="Single column",
         section_order=("summary", "skills", "experience", "projects", "education",
                        "volunteering", "certifications", "languages", "referees"),
     ),
@@ -203,7 +203,7 @@ TEMPLATES = {
         best_for="Design, media, marketing and creative roles",
         accent="#5B21B6", muted="#5B5675",
         band=True, header="left", name_case="as_typed", name_pt=26,
-        heading_style="filled", skills_style="chips", ats="Good",
+        heading_style="filled", skills_style="chips", ats="Colour header",
     ),
     "technical": _template(
         name="Technical",
@@ -211,7 +211,7 @@ TEMPLATES = {
         best_for="IT, engineering and other technical roles",
         accent="#1D4ED8", muted="#475569",
         heading_font="mono", header="left", header_rule="thin", name_case="as_typed",
-        heading_style="rule_accent", skills_style="columns", skills_cols=3, ats="Good",
+        heading_style="rule_accent", skills_style="columns", skills_cols=3, ats="Single column",
         section_order=("summary", "skills", "projects", "experience", "certifications",
                        "education", "volunteering", "languages", "referees"),
     ),
@@ -1420,6 +1420,19 @@ def generate_cv_pdf(
 # Saving and listing
 # --------------------------------------------------------------------------
 
+def cv_file_stem(profile: dict, cv_data: dict | None = None) -> str:
+    """Return a professional, filesystem-safe CV name for downloads and saves."""
+
+    def slug(value) -> str:
+        text = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "")).strip("_")
+        return text[:48].rstrip("_")
+
+    name = slug(profile.get("name"))
+    role = slug((cv_data or {}).get("target_role"))
+    parts = [part for part in (name, role, "CV") if part]
+    return "_".join(parts) or "CV"
+
+
 def save_cv_bundle(
     profile: dict,
     cv_data: dict | None = None,
@@ -1432,20 +1445,13 @@ def save_cv_bundle(
     if template not in TEMPLATES:
         template = DEFAULT_TEMPLATE
 
-    directory = Path(cv_dir) if cv_dir is not None else CV_DIR
+    directory = Path(cv_dir) if cv_dir is not None else current_cv_dir()
     directory.mkdir(parents=True, exist_ok=True)
 
     cv_content = build_cv_content(profile, cv_data)
 
-    profile_id = str(profile.get("profile_id", "unknown"))
-    profile_token = "".join(
-        character
-        if character.isalnum() or character in ("-", "_")
-        else "_"
-        for character in profile_id
-    )[:8] or "unknown"
     filename = (
-        f"CV_{profile_token}_{template}_"
+        f"{cv_file_stem(profile, cv_data)}_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     )
 
@@ -1479,9 +1485,9 @@ def save_cv_bundle(
 
 
 def list_saved_cvs(cv_dir: str | Path | None = None) -> list[dict]:
-    """List generated PDF CVs, newest first, for real dashboard metrics."""
+    """List this owner's generated PDF CVs, newest first."""
 
-    directory = Path(cv_dir) if cv_dir is not None else CV_DIR
+    directory = Path(cv_dir) if cv_dir is not None else current_cv_dir()
     if not directory.exists():
         return []
 

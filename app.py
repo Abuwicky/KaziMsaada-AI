@@ -22,9 +22,11 @@ from components.profile_components import render_profile_page
 from components.settings import render_settings_page
 from components.sidebar import render_sidebar
 from components.ui import read_asset, show_flash
-from core import APP_DISPLAY_NAME, APP_TAGLINE, APP_VERSION
+from core import APP_DISPLAY_NAME, APP_TAGLINE, APP_VERSION, BUILD_STAMP
+from core.auth import require_workspace_owner, workspace_label
 from core.database import initialize_database, migrate_json_profiles
 from core.profiles import load_profiles
+from core.workspace import get_current_owner_id
 
 st.set_page_config(
     page_title=f"{APP_DISPLAY_NAME} · Career Readiness",
@@ -58,6 +60,19 @@ def _friendly_failure(title: str, message: str, error: Exception | None = None) 
 
 
 _inject_styles()
+
+# Privacy gate: resolve the signed-in owner before any database access. When
+# sign-in is required, this stops the script until authentication succeeds.
+require_workspace_owner()
+_owner = get_current_owner_id()
+_previous_owner = st.session_state.get("_workspace_owner")
+if _previous_owner and _previous_owner != _owner:
+    # Never carry one person's in-memory drafts or selection into another
+    # person's workspace after an account switch.
+    for _key in list(st.session_state.keys()):
+        if _key != "_workspace_owner":
+            del st.session_state[_key]
+st.session_state["_workspace_owner"] = _owner
 
 try:
     migration_result = _bootstrap_database()
@@ -152,7 +167,7 @@ st.markdown(
     f"""
     <div class="km-footer">
       <span>{APP_DISPLAY_NAME} · {APP_TAGLINE}</span>
-      <span>Local workspace · v{APP_VERSION}</span>
+      <span>{workspace_label()} · v{APP_VERSION} · {BUILD_STAMP}</span>
     </div>
     """,
     unsafe_allow_html=True,
